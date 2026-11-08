@@ -62,6 +62,10 @@ pub struct HudAtlas {
     /// Identity of this packed atlas, used to invalidate cached model UV data
     /// even when a resource reload places sprites at the same coordinates.
     pub revision: u64,
+    /// The prepared resources root this atlas was packed from: a screen that needs
+    /// a texture the atlas leaves out (the world-slot panoramas, `title/background`)
+    /// reads it from here.
+    root: std::path::PathBuf,
     /// RGBA8, `width` by `height`, as built: empty once `pack_pixels` has
     /// compressed them (read them through `pixels()`).
     pub pixels: Vec<u8>,
@@ -788,6 +792,10 @@ impl HudAtlas {
     }
     /// The atlas's pixels: as built, or uncompressed again after
     /// `pack_pixels` (a renderer being rebuilt).
+    /// The prepared resources root the atlas was packed from.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
     pub fn pixels(&self) -> std::borrow::Cow<'_, [u8]> {
         let Some(packed) = self.packed.as_ref().filter(|_| self.pixels.is_empty()) else {
             return std::borrow::Cow::Borrowed(&self.pixels);
@@ -965,6 +973,7 @@ impl HudAtlas {
         };
         Ok(Self {
             revision: Self::next_revision(),
+            root: root.to_path_buf(),
             pixels: Vec::new(),
             packed: None,
             galactic_widths: [0; 128],
@@ -1021,6 +1030,7 @@ impl HudAtlas {
         let white = sprites["horizon/white"];
         Self {
             revision: Self::next_revision(),
+            root: std::path::PathBuf::new(),
             font: crate::font::Font::load(
                 Path::new("horizon-boot"),
                 &sprites,
@@ -1192,9 +1202,21 @@ impl HudAtlas {
                 }
             }
         }
+        // The title panorama and the New World preset pictures load on their own. The
+        // Realms world-slot pictures are drawn from this atlas (vanilla draws their
+        // textures full size): the three faces and `presets/isles.png` stay, costing
+        // one 1024-tall shelf.
         files.retain(|p| {
-            let s = p.to_string_lossy();
-            !s.contains("title/background") && !s.contains("presets")
+            let s = p.to_string_lossy().replace('\\', "/");
+            let slot_picture = [
+                "textures/gui/title/background/panorama_0.png",
+                "textures/gui/title/background/panorama_2.png",
+                "textures/gui/title/background/panorama_3.png",
+                "textures/gui/presets/isles.png",
+            ]
+            .iter()
+            .any(|kept| s.ends_with(kept));
+            slot_picture || (!s.contains("title/background") && !s.contains("presets"))
         });
         // OptiFine random entity variants, under the names their scan gives them (those
         // outside `textures/` are `<ns>:optifine/random/...`).
@@ -1270,60 +1292,68 @@ impl HudAtlas {
             files.extend(extra);
         }
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
-        let decode_one = |path: &PathBuf| -> Option<Decoded> {
-            let name = if let Some(name) = named.get(path) {
-                name.clone()
-            } else {
-                match path.strip_prefix(&textures) {
-                    Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
-                    Err(_) => {
-                        let rel = path.strip_prefix(&assets).ok()?.with_extension("");
-                        let rel = rel.to_string_lossy().replace('\\', "/");
-                        let (namespace, rest) = rel.split_once("/textures/")?;
-                        format!("{namespace}:{rest}")
+        let decode_one =
+            |path: &PathBuf| -> Option<Decoded> {
+                let name = if let Some(name) = named.get(path) {
+                    name.clone()
+                } else {
+                    match path.strip_prefix(&textures) {
+                        Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
+                        Err(_) => {
+                            let rel = path.strip_prefix(&assets).ok()?.with_extension("");
+                            let rel = rel.to_string_lossy().replace('\\', "/");
+                            let (namespace, rest) = rel.split_once("/textures/")?;
+                            format!("{namespace}:{rest}")
+                        }
                     }
+                };
+                // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
+                if let Some(base) = name.strip_suffix("_n").or_else(|| name.strip_suffix("_s"))
+                    && textures.join(format!("{base}.png")).is_file()
+                {
+                    return None;
                 }
+                let image = decode(path)
+                    .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
+                    .ok()?;
+                let mcmeta = horizon_core::prepared_files::read_to_string(
+                    &path.with_extension("png.mcmeta"),
+                )
+                .ok();
+                let animation = animation_of(mcmeta.as_deref());
+                // An animated strip keeps its first frame.
+                let frames =
+                    animation.is_some() || name.starts_with("block/") || name.starts_with("item/");
+                let (w, h, pixels) = if frames {
+                    first_frame(image, animation.as_ref())
+                } else {
+                    image
+                };
+                // The default texture's size, when a pack's differs from it.
+                let gui_size = default_textures
+                    .as_ref()
+                    .and_then(|d| png_size(&d.join(format!("{name}.png"))))
+                    .map(|(dw, dh)| {
+                        let side = dw.min(dh);
+                        if frames { (side, side) } else { (dw, dh) }
+                    })
+                    .filter(|&size| size != (w, h));
+                let flags = mcmeta.as_deref().and_then(TextureFlags::from_mcmeta);
+                let animated = frames && animation.is_some();
+                let (gw, gh) = gui_size.unwrap_or((w, h));
+                // The Realms world-slot pictures are 1024-tall GUI textures drawn as
+                // they are; the cap that keeps other GUI textures small does not
+                // apply to them.
+                let tall_picture = matches!(
+                    name.as_str(),
+                    "gui/title/background/panorama_0"
+                        | "gui/title/background/panorama_2"
+                        | "gui/title/background/panorama_3"
+                        | "gui/presets/isles"
+                );
+                (gw <= 1024 && (gh <= 512 || tall_picture || name.starts_with("font/")))
+                    .then_some(((name, w, h, pixels), flags, gui_size, animated))
             };
-            // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
-            if let Some(base) = name.strip_suffix("_n").or_else(|| name.strip_suffix("_s"))
-                && textures.join(format!("{base}.png")).is_file()
-            {
-                return None;
-            }
-            let image = decode(path)
-                .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
-                .ok()?;
-            let mcmeta =
-                horizon_core::prepared_files::read_to_string(&path.with_extension("png.mcmeta"))
-                    .ok();
-            let animation = animation_of(mcmeta.as_deref());
-            // An animated strip keeps its first frame.
-            let frames =
-                animation.is_some() || name.starts_with("block/") || name.starts_with("item/");
-            let (w, h, pixels) = if frames {
-                first_frame(image, animation.as_ref())
-            } else {
-                image
-            };
-            // The default texture's size, when a pack's differs from it.
-            let gui_size = default_textures
-                .as_ref()
-                .and_then(|d| png_size(&d.join(format!("{name}.png"))))
-                .map(|(dw, dh)| {
-                    let side = dw.min(dh);
-                    if frames { (side, side) } else { (dw, dh) }
-                })
-                .filter(|&size| size != (w, h));
-            let flags = mcmeta.as_deref().and_then(TextureFlags::from_mcmeta);
-            let animated = frames && animation.is_some();
-            let (gw, gh) = gui_size.unwrap_or((w, h));
-            (gw <= 1024 && (gh <= 512 || name.starts_with("font/"))).then_some((
-                (name, w, h, pixels),
-                flags,
-                gui_size,
-                animated,
-            ))
-        };
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
         let chunk = files.len().div_ceil(threads).max(1);
         let decoded: Vec<_> = std::thread::scope(|scope| {
@@ -1531,6 +1561,7 @@ impl HudAtlas {
         );
         Ok(Self {
             revision: Self::next_revision(),
+            root: root.to_path_buf(),
             galactic_widths: galactic_widths(&sprites, &pixels, width, height),
             pixels,
             packed: None,
