@@ -327,7 +327,7 @@ mod tests {
             .map_async(wgpu::MapMode::Read, |r| r.unwrap());
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let pixels = read.slice(..).get_mapped_range().unwrap().to_vec();
-        let row = |y: usize| &pixels[y as usize * STRIDE as usize..][..16 * 4];
+        let row = |y: usize| &pixels[y * STRIDE as usize..][..16 * 4];
         assert!(
             (0..16).all(|y| row(y)
                 .as_chunks::<4>()
