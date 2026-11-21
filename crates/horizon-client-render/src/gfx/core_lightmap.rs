@@ -335,7 +335,7 @@ mod tests {
                 .iter()
                 .all(|p| p.iter().all(|&b| b == 255))),
             "the fullbright shader lights every texel: {:?}",
-            row(0)[..16]
+            &row(0)[..16]
         );
     }
 }
