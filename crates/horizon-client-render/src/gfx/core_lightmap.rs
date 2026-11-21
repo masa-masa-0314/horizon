@@ -282,9 +282,12 @@ mod tests {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
+        // The readback rows sit 256 bytes apart: a copy's row stride must be
+        // a multiple of 256.
+        const STRIDE: u32 = 256;
         let read = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: 16 * 16 * 4,
+            size: u64::from(STRIDE * 16),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -313,7 +316,7 @@ mod tests {
                 buffer: &read,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(16 * 4),
+                    bytes_per_row: Some(STRIDE),
                     rows_per_image: Some(16),
                 },
             },
@@ -324,14 +327,15 @@ mod tests {
             .map_async(wgpu::MapMode::Read, |r| r.unwrap());
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let pixels = read.slice(..).get_mapped_range().unwrap().to_vec();
+        let row = |y: usize| &pixels[y as usize * STRIDE as usize..][..16 * 4];
         assert!(
-            pixels
+            (0..16).all(|y| row(y)
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .all(|p| p.iter().all(|&b| b == 255)),
+                .all(|p| p.iter().all(|&b| b == 255))),
             "the fullbright shader lights every texel: {:?}",
-            &pixels[..16]
+            row(0)[..16]
         );
     }
 }
