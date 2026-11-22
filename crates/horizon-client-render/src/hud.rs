@@ -1575,17 +1575,32 @@ impl HudAtlas {
                         Ok(layout) => layout,
                         Err(_) => {
                             let keep = full_size_sprites(root, &images, &bordered);
-                            let layout = Self::layout_capping_mod_textures(
+                            let capped = Self::layout_capping_mod_textures(
                                 &mut images,
                                 &mut gui_sizes,
                                 &keep,
                                 &mod_namespaces(),
                                 MAX_ATLAS_SIZE,
-                            )?;
-                            log::warn!(
-                                "reduced the resolution of mods' HUD textures to keep the resource packs: {error}"
                             );
-                            return Ok(layout);
+                            match capped {
+                                Ok(layout) => {
+                                    log::warn!(
+                                        "reduced the resolution of mods' HUD textures to keep the resource packs: {error}"
+                                    );
+                                    return Ok(layout);
+                                }
+                                Err(_) => {
+                                    let layout = Self::layout_reducing_hires(
+                                        &mut images,
+                                        &gui_sizes,
+                                        MAX_ATLAS_SIZE,
+                                    )?;
+                                    log::warn!(
+                                        "reduced the pack's high-resolution sprites toward their logical sizes to keep the resource pack: {error}"
+                                    );
+                                    return Ok(layout);
+                                }
+                            }
                         }
                     };
                     log::warn!(

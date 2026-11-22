@@ -56,6 +56,59 @@ fn a_pack_over_its_own_defaults_keeps_the_default_sprite_size() {
     );
 }
 
+/// A pack whose sprites only fit once the atlas halves them toward their
+/// logical sizes: the logical-size filter lets a 128x pack's GUI and entity
+/// textures in at full resolution, past what one atlas holds (#19022's
+/// review), so the layout falls back to halving them down to the logical
+/// size before giving up.
+#[test]
+fn a_pack_that_only_fits_once_its_hires_sprites_are_reduced() {
+    let mut images = vec![
+        (
+            "gui/sprites/container/inventory".to_owned(),
+            512,
+            512,
+            vec![9; 512 * 512 * 4],
+        ),
+        ("item/test".to_owned(), 64, 64, vec![7; 64 * 64 * 4]),
+    ];
+    let gui_sizes = HashMap::from([
+        ("gui/sprites/container/inventory".to_owned(), (256, 256)),
+        ("item/test".to_owned(), (16, 16)),
+    ]);
+    // The unreduced shelf (512 tall) plus the glyph rows misses a 800-tall
+    // atlas; the reduced one (256 tall) fits.
+    let (width, placements, glyph_region) =
+        HudAtlas::layout_reducing_hires(&mut images, &gui_sizes, 800).unwrap();
+    assert_eq!(width, 800);
+    assert_eq!(placements.len(), 2);
+    assert!(glyph_region + GLYPH_ROWS <= 800);
+    let big = images
+        .iter()
+        .find(|i| i.0 == "gui/sprites/container/inventory")
+        .unwrap();
+    assert_eq!(
+        (big.1, big.2),
+        (256, 256),
+        "reduced to the logical size, not past it"
+    );
+    assert_eq!(big.3.len(), 256 * 256 * 4);
+    let item = images.iter().find(|i| i.0 == "item/test").unwrap();
+    assert_eq!((item.1, item.2), (32, 32), "halved one step toward 16");
+}
+
+/// A pack the reduction cannot fit (its sprites are at their logical sizes
+/// already) keeps the layout error.
+#[test]
+fn a_pack_its_reduction_cannot_fit_still_fails() {
+    let mut images = vec![("item/test".to_owned(), 16, 16, vec![7; 16 * 16 * 4])];
+    let gui_sizes = HashMap::from([("item/test".to_owned(), (16, 16))]);
+    let error = HudAtlas::layout_reducing_hires(&mut images, &gui_sizes, 64)
+        .err()
+        .expect("a 16-texel sprite plus the glyph rows cannot fit 64 texels");
+    assert!(error.to_string().contains("do not fit"), "{error}");
+}
+
 /// An index with one grey PNG per entry.
 fn index(files: Vec<(&str, u32)>) -> ResourceSource {
     let map = files
