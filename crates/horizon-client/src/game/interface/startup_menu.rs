@@ -87,6 +87,7 @@ impl StartupMenu {
                     seed: Some(options.seed),
                     creative: options.creative,
                     create: None,
+                    existing_only: false,
                 })
         };
         let mut menu = Self {
@@ -272,6 +273,7 @@ impl StartupMenu {
                 seed: None,
                 creative: false,
                 create: None,
+                existing_only: true,
             },
             Action::Create {
                 folder,
@@ -285,6 +287,7 @@ impl StartupMenu {
                 seed,
                 creative,
                 create: Some(Box::new(options)),
+                existing_only: false,
             },
             Action::Connect {
                 address,
@@ -1716,6 +1719,7 @@ mod tests {
                         seed: Some(1),
                         creative: true,
                         create: Some(Box::new(options)),
+                        existing_only: false,
                     }),
                     ..Default::default()
                 };
