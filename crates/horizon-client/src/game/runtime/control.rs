@@ -211,6 +211,19 @@ impl Game<'_> {
                 self.pending_bench = Some((deadline, reply, raw));
             }
         }
+        // Without frames too: a screenshot no frame takes fails rather than waiting for good.
+        // A result still to be answered (a rebuilt renderer carries it over) is left to the
+        // next frame, which answers it whether or not it is drawn.
+        let renderer = self.renderer.as_mut();
+        if renderer.as_ref().is_none_or(|r| r.screenshot_result.is_none()) {
+            let not_drawn = renderer.as_ref().and_then(|r| r.not_drawn());
+            super::pending_screenshot::expire(
+                &mut self.pending_screenshot,
+                renderer.map(|r| &mut r.screenshot),
+                not_drawn,
+                Instant::now(),
+            );
+        }
         horizon_client::widgets::end_frame(self.frames);
         self.narrate_screen();
         self.poll_repro(event_loop);
@@ -1107,19 +1120,16 @@ impl Game<'_> {
             }
             "screenshot" => {
                 let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
-                if self.pending_screenshot.is_some() {
-                    return Err("a screenshot is already pending".into());
-                }
                 arg(1)?;
                 // The rest of the line: a path may hold spaces.
                 let path = line.trim_start().strip_prefix("screenshot").unwrap_or("");
-                renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
-                    path: path.trim().into(),
-                    size: None,
-                    scaled: false,
-                    background: false,
-                });
-                self.pending_screenshot = Some(reply.clone());
+                super::pending_screenshot::begin(
+                    &mut self.pending_screenshot,
+                    &mut renderer.screenshot,
+                    path.trim().into(),
+                    reply,
+                    Instant::now(),
+                )?;
                 Ok(None)
             }
             "chat" => {
@@ -1608,6 +1618,19 @@ impl Game<'_> {
             .iter()
             .map(|(id, (pos, stage, _))| json!({ "id": id, "pos": pos, "stage": stage }))
             .collect();
+        // Its own `json!` object: the status macro is already at the crate's recursion limit.
+        let display = self
+            .window
+            .as_deref()
+            .and_then(horizon_client::monitor::of)
+            .map(|m| {
+                json!({
+                    "width": m.size().width,
+                    "height": m.size().height,
+                    "scale": m.scale_factor(),
+                    "refresh_hz": m.refresh_rate_millihertz().map(|r| r.div_ceil(1000)),
+                })
+            });
         let mut status = json!({
             "screen": self.screen_name(),
             "debug": {
@@ -1645,22 +1668,18 @@ impl Game<'_> {
             "carts": self.remote_carts().unwrap_or_else(|| self.carts.iter().map(|c| serde_json::json!({"kind": c.kind.id(), "position": [c.position.x, c.position.y, c.position.z], "velocity": [c.velocity.x, c.velocity.y, c.velocity.z]})).collect::<Vec<_>>()),
             "riding": self.riding,
             "using": self.using,
-            "render_distance": self.streaming.radius,
+            "render_distance": self.effective_render_distance(),
             "chunks": self.world.chunks.len(),
             "mobs": self.mobs.len(),
             "block_entities": self.world.block_entities.len(),
             "pending_chunks": self.streaming.pending() + self.pending_uploads.len() + self.remote_backlog(),
+            "terrain_loading": self.terrain_loading(),
             "generated_chunks": self.streaming.generated_total,
             "meshed_sections": self.streaming.meshed_total,
             "streaming": self.streaming.stages().into_iter().map(|(k, v)| (k.to_string(), v.into())).collect::<serde_json::Map<_, _>>(),
             "dirty_light": self.world.dirty_light.len(),
             "renderer": renderer,
-            "display": self.window.as_deref().and_then(horizon_client::monitor::of).map(|m| json!({
-                "width": m.size().width,
-                "height": m.size().height,
-                "scale": m.scale_factor(),
-                "refresh_hz": m.refresh_rate_millihertz().map(|r| r.div_ceil(1000)),
-            })),
+            "display": display,
             "uptime_seconds": self.started.elapsed().as_secs_f64(),
             "server": self.remote_status(),
             // The names the name tags show now, seen from the eyes.
@@ -1669,6 +1688,9 @@ impl Game<'_> {
                 .map(|e| self.shown_name_tags(glam::DVec3::from_array(e))),
         });
         status["lod"] = lod;
+        // Why `frames` stands still, if it does (#19436).
+        let not_drawn = self.renderer.as_ref().and_then(|r| r.not_drawn());
+        status["not_drawn"] = not_drawn.map(|n| n.as_str()).into();
         // Parallel Tick: the setting, whether the next tick shares its work, and Auto's state.
         let (setting, on, auto) = horizon_client::parallel::status();
         status["parallel_tick"] = json!({ "setting": setting, "on": on, "auto": auto });

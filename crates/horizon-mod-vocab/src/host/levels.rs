@@ -61,6 +61,32 @@ pub trait LevelsBackend {
         structure: &str,
         parameters: StructureSearch,
     ) -> Option<StructureSearchResult>;
+    /// Side: server.
+    /// `StructureManager.getStructureAt` and `getStructureWithPieceAt` in one read: every
+    /// structure the chunk at `pos` refers to whose start's box or one of whose pieces, as
+    /// placed, holds `pos`, with which of the two (`in_box`, `in_piece`). Reads the level in place or
+    /// parked from the starts the generator holds: loads no chunk and builds no start. Empty
+    /// for a chunk that refers to no structure there; None on a client, for a stale or
+    /// unavailable level, for a chunk that isn't loaded and for one whose references the level
+    /// can't resolve now (a level without generated terrain, or starts the generator no longer
+    /// holds).
+    #[access(WorldOnly)]
+    fn level_structures_at(&self, level: LevelRef, pos: [i32; 3]) -> Option<Vec<StructureAt>>;
+    /// Side: server.
+    /// The block entities in the box from `min` to `max`, maxima exclusive, in the chunks of it
+    /// that are loaded (`LevelChunk.getBlockEntities` over those chunks; Paper's
+    /// `Chunk.getTileEntities`): each one's position and type id, sorted by position (x, then y,
+    /// then z). Reads the level in place or parked and loads nothing; a block entity out for its
+    /// own tick is not listed during that tick. None on a client, for a stale or unavailable
+    /// level, for an empty box (a minimum not below its maximum), for one wholly outside the
+    /// level's height and for one over more than 64 chunks.
+    #[access(WorldOnly)]
+    fn level_block_entities(
+        &self,
+        level: LevelRef,
+        min: [i32; 3],
+        max: [i32; 3],
+    ) -> Option<Vec<BlockEntityAt>>;
     /// Side: both.
     /// `Level.getSkyDarken`: the sky-light reduction from dimension, time and weather.
     /// Reads any loaded server level, including parked levels, or the current client level.
@@ -900,6 +926,23 @@ pub trait LevelsBackendMut {
         chunk: ChunkRef,
         controller: TicketController,
         owner: TicketOwner,
+        forced: bool,
+        natural_spawning: bool,
+    ) -> bool;
+    /// Side: server.
+    /// Hold or release a runtime-only ticket of `controller` on this chunk for
+    /// `operation`, an id the mod picks (a teleport search, say): true when the
+    /// controller's tickets changed. It holds the chunk as `chunk_set_mod_forced`
+    /// does, with the same refusals, and is scoped by (controller, operation,
+    /// chunk, natural_spawning). It is never saved, never handed to
+    /// `validate_tickets` and never listed by `mod_forced_chunks`; it ends when
+    /// the level closes.
+    #[access(WorldOnly)]
+    fn chunk_set_transient_forced(
+        &mut self,
+        chunk: ChunkRef,
+        controller: TicketController,
+        operation: u128,
         forced: bool,
         natural_spawning: bool,
     ) -> bool;
