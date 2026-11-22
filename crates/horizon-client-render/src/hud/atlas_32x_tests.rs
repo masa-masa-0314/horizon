@@ -103,9 +103,7 @@ fn a_pack_that_only_fits_once_its_hires_sprites_are_reduced() {
 fn a_pack_its_reduction_cannot_fit_still_fails() {
     let mut images = vec![("item/test".to_owned(), 16, 16, vec![7; 16 * 16 * 4])];
     let gui_sizes = HashMap::from([("item/test".to_owned(), (16, 16))]);
-    let error = HudAtlas::layout_reducing_hires(&mut images, &gui_sizes, 64)
-        .err()
-        .expect("a 16-texel sprite plus the glyph rows cannot fit 64 texels");
+    let error = HudAtlas::layout_reducing_hires(&mut images, &gui_sizes, 64).unwrap_err();
     assert!(error.to_string().contains("do not fit"), "{error}");
 }
 
