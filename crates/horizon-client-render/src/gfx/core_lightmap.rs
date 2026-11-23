@@ -198,6 +198,42 @@ impl PackLightmap {
 mod tests {
     use super::*;
 
+    /// Switching fullbright on has the CPU path overwrite the pack's draw with
+    /// white; switching it off must redraw the pack's shader even with every
+    /// input unchanged (the PR's review), and the steady states do nothing.
+    #[test]
+    fn toggling_fullbright_redraws_the_pack_lightmap() {
+        let sky = super::super::Sky {
+            sky_light_factor: 0.25,
+            ..Default::default()
+        };
+        let key = super::super::LightmapKey::new(&sky, 0.05, 0.5, 0.0, 0.0, 0.0, false);
+        let vanilla = [7u8; 16 * 16 * 4];
+        // The pack's draw is in, fullbright off: steady state draws nothing.
+        let (uploaded, mut from_cpu, drawn_key) = (true, false, Some(key));
+        assert!(!super::super::Renderer::pack_lightmap_needs_draw(
+            uploaded, from_cpu, drawn_key, &key
+        ));
+        // Fullbright on: the CPU overwrites the texture with white.
+        let white = [255u8; 16 * 16 * 4];
+        assert!(super::super::Renderer::cpu_lightmap_needs_upload(
+            &white, &vanilla, uploaded, from_cpu
+        ));
+        from_cpu = true;
+        // Fullbright off, every input unchanged: the pack redraws.
+        assert!(super::super::Renderer::pack_lightmap_needs_draw(
+            uploaded, from_cpu, drawn_key, &key
+        ));
+        from_cpu = false;
+        // And the steady states do nothing again.
+        assert!(!super::super::Renderer::pack_lightmap_needs_draw(
+            uploaded, from_cpu, drawn_key, &key
+        ));
+        assert!(!super::super::Renderer::cpu_lightmap_needs_upload(
+            &white, &white, uploaded, from_cpu
+        ));
+    }
+
     /// The std140 layout: the six floats, then the vec3s at 16-byte strides, the last one ending
     /// the block at 96 bytes.
     #[test]
