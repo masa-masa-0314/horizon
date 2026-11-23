@@ -55,6 +55,10 @@ pub(crate) struct TestLevel {
     pub block_events_ready: bool,
     /// Positions that refuse fluids, fire and piston moves, as a land claim would.
     pub guarded: HashSet<BlockPos>,
+    /// The states `template_suppressed` names: blocks of a mod that is off.
+    pub suppressed: HashSet<BlockStateId>,
+    /// How many times `allow_fluid_tick` was asked.
+    pub fluid_asks: std::cell::Cell<u32>,
     /// What `adjust_signal` answers at a position: the weak and direct signal,
     /// and the only direction they go in, if any.
     pub signals: HashMap<BlockPos, (i32, i32, Option<Direction>)>,
@@ -134,6 +138,8 @@ impl TestLevel {
             tick_ready: true,
             block_events_ready: true,
             guarded: HashSet::new(),
+            suppressed: HashSet::new(),
+            fluid_asks: Default::default(),
             fire_asks: Default::default(),
             source_asks: Default::default(),
             lava_asks: Default::default(),
@@ -293,7 +299,11 @@ impl LevelAccess for TestLevel {
         self.events.push(event);
     }
     fn allow_fluid_tick(&self, pos: BlockPos, _fluid: &'static str) -> bool {
+        self.fluid_asks.set(self.fluid_asks.get() + 1);
         !self.guarded.contains(&pos)
+    }
+    fn template_suppressed(&self, state: BlockStateId) -> bool {
+        self.suppressed.contains(&state)
     }
     fn allow_spread(&self, _kind: Spread, _from: BlockPos, to: BlockPos) -> bool {
         !self.guarded.contains(&to)
@@ -3573,6 +3583,39 @@ fn open_shulker_box_supports_only_through_its_base_plate() {
             "open box facing {facing:?} lid side"
         );
     }
+}
+
+#[test]
+fn an_open_shulker_box_stops_conducting_redstone_but_a_closed_one_and_stone_do() {
+    let mut w = world!();
+    let box_pos = BlockPos::new(0, 1, 0);
+    let stone_pos = BlockPos::new(2, 1, 0);
+    w.put(box_pos, w.id("shulker_box", &[("facing", "up")]));
+    w.put(stone_pos, w.id("stone", &[]));
+    w.level.shulker_closed.remove(&box_pos);
+    let box_state = w.get(box_pos);
+    let stone_state = w.get(stone_pos);
+    {
+        let sim = w.b().sim(&mut w.level, &mut w.ticks);
+        assert!(
+            sim.is_redstone_conductor(box_state, box_pos),
+            "a closed box is a full cube"
+        );
+        assert!(
+            sim.is_redstone_conductor(stone_state, stone_pos),
+            "a full block still conducts"
+        );
+    }
+    w.level.shulker_closed.insert(box_pos, false);
+    let sim = w.b().sim(&mut w.level, &mut w.ticks);
+    assert!(
+        !sim.is_redstone_conductor(box_state, box_pos),
+        "an open lid takes the box out of the full cube"
+    );
+    assert!(
+        sim.is_redstone_conductor(stone_state, stone_pos),
+        "the open box does not change its neighbours"
+    );
 }
 
 #[test]
