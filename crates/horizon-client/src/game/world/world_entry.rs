@@ -87,6 +87,7 @@ impl Game<'_> {
                 creative,
                 create,
                 existing_only,
+                safe_mode,
             }) => {
                 self.open_world_as(
                     &folder,
@@ -95,6 +96,7 @@ impl Game<'_> {
                     creative,
                     create.as_deref(),
                     existing_only,
+                    safe_mode,
                 )?;
             }
             Some(PendingWorldEntry::Server {

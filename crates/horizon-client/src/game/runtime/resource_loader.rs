@@ -202,6 +202,8 @@ pub(super) enum PendingWorldEntry {
         /// The save must still exist when the entry opens (a title's Play or a request's Yes): nothing is
         /// created for a folder that has gone.
         existing_only: bool,
+        /// DatapackLoadFailureScreen's Safe Mode: the world opens without its own data packs.
+        safe_mode: bool,
     },
     Server {
         address: String,

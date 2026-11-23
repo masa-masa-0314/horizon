@@ -1,4 +1,7 @@
 {
+  "horizon.datapack_failure.title": "Failed to load datapacks",
+  "horizon.datapack_failure.safe_mode": "Safe Mode",
+  "horizon.datapack_failure.safe_mode.failed": "Failed to load datapacks even in Safe Mode",
   "horizon.no_resources.title": "No prepared game files",
   "horizon.no_resources.prepare": "Prepare them with horizon-prepare --prepare, or pass --resources <folder>.",
   "horizon.no_resources.looked_in": "No prepared game files in %s",

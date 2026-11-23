@@ -1434,6 +1434,9 @@ struct Game<'a> {
     sleep_seen: (i64, i64),
     dim: Dim,
     world_root: PathBuf,
+    /// The folder the world's data packs are read from: `world_root`, or an empty folder in
+    /// Safe Mode (`DatapackLoadFailureScreen`).
+    pack_root: PathBuf,
     carrier_retention_snapshot: Vec<(u128, u32)>,
     /// Offline-to-account UUID migration: loaded entities retain the old UUID until saved.
     owner_migration: Option<(u128, u128)>,
@@ -6419,11 +6422,13 @@ impl Game<'_> {
             locator,
             loot,
             owner_migration,
+            pack_root,
         } = prepared;
         self.server_loot = loot;
         let dim = Dim::from_id(&level.dimension);
         self.level_shapes = shapes;
         self.world_root = save_root.clone();
+        self.pack_root = pack_root.unwrap_or_else(|| save_root.clone());
         // The root moves before the prepared level is installed. Until then a
         // final save must not run: the lock below only marks tag tables.
         self.world_adopted = false;
@@ -11046,6 +11051,7 @@ impl<'a> Game<'a> {
             sleep_seen: (0, 0),
             dim: Dim::Overworld,
             world_root: PathBuf::new(),
+            pack_root: PathBuf::new(),
             carrier_retention_snapshot: Vec::new(),
             owner_migration: None,
             world_flat: false,

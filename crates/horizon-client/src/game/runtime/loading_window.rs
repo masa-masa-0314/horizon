@@ -456,6 +456,7 @@ pub(super) fn start_game<'a>(
                     creative,
                     create: None,
                     existing_only: false,
+                    safe_mode: false,
                 });
             }
         }

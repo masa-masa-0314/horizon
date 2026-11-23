@@ -467,6 +467,9 @@ pub(super) struct Starting {
     /// `Minecraft.doWorldLoad`'s `newWorld`: the loading screen stays 500 ms
     /// once the level is ready.
     new_world: bool,
+    /// `DatapackLoadFailureScreen`'s Safe Mode: a startup failure goes back to the title
+    /// instead of the fatal-error path.
+    safe_mode: bool,
 }
 
 /// The world to open and the player who owns it.
@@ -484,6 +487,10 @@ struct Launch {
     player: String,
     /// The signed-in account's profile, fetched while the world loads.
     owner_profile: Option<Arc<OwnerProfile>>,
+    /// DatapackLoadFailureScreen's Safe Mode: the world's data packs are left out.
+    safe_mode: bool,
+    /// The empty folder this session's Safe Mode reads, made once by `open_world_as`.
+    pack_root: Option<std::path::PathBuf>,
 }
 
 impl Game<'_> {
@@ -534,6 +541,20 @@ impl Game<'_> {
         creative: bool,
         create: Option<&WorldOptions>,
     ) -> Result<()> {
+        self.open_integrated_with_safe_mode(folder, name, seed, creative, create, false, None)
+    }
+    /// `open_integrated`, with `DatapackLoadFailureScreen`'s Safe Mode: the world opens without
+    /// its own data packs.
+    pub(super) fn open_integrated_with_safe_mode(
+        &mut self,
+        folder: &str,
+        name: Option<&str>,
+        seed: Option<i64>,
+        creative: bool,
+        create: Option<&WorldOptions>,
+        safe_mode: bool,
+        pack_root: Option<std::path::PathBuf>,
+    ) -> Result<()> {
         self.client_logging_out();
         horizon_client::command::vanilla::set_horizon_commands(
             self.options.pregen || self.settings.extras.pregen,
@@ -579,6 +600,9 @@ impl Game<'_> {
                         .collect()
                 }))
             }),
+            safe_mode,
+            // The window's biome table below reads the same folder after the launch moved it.
+            pack_root: pack_root.clone(),
         };
         let mut options = self.options.clone();
         // A server without a console: no local player, no window, no control socket.
@@ -600,8 +624,9 @@ impl Game<'_> {
         let enabled_features = horizon_client::save::Level::read(&world)
             .map(|l| l.enabled_features)
             .unwrap_or_default();
+        let packs_root = pack_root.as_ref().unwrap_or(&world);
         self.world_biomes = Some(super::world_loading::packed_biomes(
-            &world,
+            packs_root,
             &self.options.resources,
             self.res.biomes(),
             &enabled_features,
@@ -676,6 +701,7 @@ impl Game<'_> {
             player,
             folder: folder.to_owned(),
             new_world,
+            safe_mode,
         });
         // Harnesses, control scripts and runs without a window go on with the world open.
         if self.window.is_none() || super::synchronous_startup(&self.options) {
@@ -708,6 +734,22 @@ impl Game<'_> {
                 return Ok(());
             }
             Ok(Err(e)) => {
+                let Some((folder, safe_mode)) = self
+                    .integrated_starting
+                    .as_ref()
+                    .map(|starting| (starting.folder.clone(), starting.safe_mode))
+                else {
+                    return Ok(());
+                };
+                if safe_mode && self.title.is_some() {
+                    log::warn!("Horizon: world \"{folder}\" failed in Safe Mode: {e}");
+                    if let Some(title) = self.title.as_mut() {
+                        title.datapack_safe_mode_failed(&folder);
+                    }
+                    self.integrated_starting = None;
+                    self.perf.cancel_world_opening();
+                    return Ok(());
+                }
                 self.integrated_starting = None;
                 return Err(e.into());
             }
@@ -1522,6 +1564,8 @@ fn serve(
     // `IntegratedServer.setSingleplayerProfile`: the account this world belongs to
     // (an older world's offline owner moves to it at open).
     .map(|request| request.owned_by(&launch.player, launch.owner))
+    .map(|request| request.with_safe_mode(launch.safe_mode))
+    .map(|request| request.with_pack_root(launch.pack_root.clone()))
     .and_then(|request| {
         WorldLoader::start(
             request,

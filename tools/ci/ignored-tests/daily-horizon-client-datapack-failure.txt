@@ -1,0 +1,2 @@
+# The world preflight needs prepared registry data to reach the broken predicate.
+horizon-client game::functions::loading_tests::validation_rejects_a_world_predicate_without_a_type lib daily resources

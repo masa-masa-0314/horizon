@@ -333,6 +333,11 @@ pub enum Mode {
         world: WorldEntry,
         missing: Vec<crate::save::level_mods::MissingMod>,
     },
+    /// `DatapackLoadFailureScreen`: the world's data packs do not load. Safe Mode opens the world
+    /// again without them; Back leaves the world closed.
+    DatapackFailure {
+        world: WorldEntry,
+    },
     Delete {
         world: WorldEntry,
     },
@@ -412,6 +417,10 @@ pub enum Action {
     /// `ConfirmLinkScreen.copyToClipboard`.
     CopyText(String),
     Play {
+        folder: String,
+    },
+    /// `DatapackLoadFailureScreen`'s Safe Mode: open the world without its data packs.
+    PlaySafeMode {
         folder: String,
     },
     Create {
@@ -817,6 +826,7 @@ impl Mode {
             Self::WorldRequest { .. } => "world_request",
             Self::MissingBiomeRegions { .. } => "missing_biome_regions",
             Self::MissingMods { .. } => "missing_mods",
+            Self::DatapackFailure { .. } => "datapack_failure",
             Self::AdoptBiomeRegions { .. } => "adopt_biome_regions",
             Self::Delete { .. } => "world_delete",
             Self::Recover { .. } => "world_recover",
@@ -1401,11 +1411,54 @@ impl Title {
         self.scroll.set(scroll);
         false
     }
+    /// `WorldOpenFlows.openWorldLoadLevelStem`'s `DatapackLoadFailureScreen`: the world's data
+    /// packs did not load. Safe Mode retries without them; Back returns to the world list.
+    pub fn ask_datapack_failure(&mut self, folder: &str) {
+        if let Some(world) = list_worlds(&self.saves)
+            .into_iter()
+            .find(|world| world.folder == folder)
+        {
+            self.set_mode(Mode::DatapackFailure { world });
+        } else {
+            self.failed(lang::get_or(
+                "horizon.datapack_failure.title",
+                "Failed to load the world's data packs",
+            ));
+        }
+    }
+    /// Safe Mode failed too: vanilla's `AlertScreen` over the world list
+    /// (`datapackFailure.safeMode.failed.title` and `.description`).
+    pub fn datapack_safe_mode_failed(&mut self, folder: &str) {
+        let worlds = list_worlds(&self.saves);
+        *self.recent.borrow_mut() = None;
+        // The alert's Back goes to the list even while screen changes are gated:
+        // `return_to_list` would only queue the list, and `failed` would keep the failure screen
+        // as its return target.
+        let return_to = if worlds.is_empty() {
+            self.create_return_to_main = true;
+            self.new_world()
+        } else {
+            let selected = worlds
+                .iter()
+                .position(|world| world.folder == folder && self.matches_search(world));
+            Mode::Select { worlds, selected }
+        };
+        self.failed_with(
+            lang::get_or(
+                "horizon.datapack_failure.safe_mode.failed",
+                "The world could not be opened even without its data packs.",
+            ),
+            return_to,
+        )
+    }
     pub fn failed(&mut self, error: impl std::fmt::Display) {
-        let return_to = Box::new(self.mode.clone());
+        let return_to = self.mode.clone();
+        self.failed_with(error, return_to);
+    }
+    fn failed_with(&mut self, error: impl std::fmt::Display, return_to: Mode) {
         self.set_mode(Mode::Error {
             message: error.to_string(),
-            return_to,
+            return_to: Box::new(return_to),
             alert: None,
         });
     }
@@ -2087,6 +2140,13 @@ Running out of disk space while in game can lead to your world being damaged.",
                 missing_biome_regions::screen_info(missing)
             }
             Mode::MissingMods { missing, .. } => missing_mods::screen_info(missing),
+            Mode::DatapackFailure { .. } => ScreenInfo::new(
+                "datapack_failure",
+                get(
+                    "horizon.datapack_failure.title",
+                    "Failed to load the world's data packs",
+                ),
+            ),
             Mode::AdoptBiomeRegions { .. } => edit_world::adopt_screen_info(),
             // AccessibilityOnboardingScreen narrates its title.
             Mode::Onboarding(_) => ScreenInfo::new(
@@ -2442,7 +2502,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         let action = self.click_action(x, y, (w, h), hit);
         self.drop_button_focus_for_field(hit);
         // World list selection is silent; launching its selected entry sounds.
-        let sound = sound || matches!(action, Action::Play { .. });
+        let sound = sound || matches!(action, Action::Play { .. } | Action::PlaySafeMode { .. });
         (action, sound)
     }
     /// A click that misses every button and leaves an edit box focused moves the focus
@@ -2621,6 +2681,15 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             (Mode::MissingMods { world, .. }, Some(id @ 101..=103)) => {
                 let world = world.clone();
                 self.answer_missing_mods(world, id)
+            }
+            // DatapackLoadFailureScreen: Safe Mode drops the world's packs; Back leaves it closed.
+            (Mode::DatapackFailure { world }, Some(101)) => Action::PlaySafeMode {
+                folder: world.folder.clone(),
+            },
+            (Mode::DatapackFailure { world }, Some(102)) => {
+                let folder = world.folder.clone();
+                self.back_from_world(&folder);
+                Action::None
             }
             (Mode::Edit { world, name, .. }, Some(98)) => {
                 let (world, name) = (world.clone(), name.clone());
@@ -3099,7 +3168,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         if self.list_focused() && self.focused_button.is_none() {
             let action = self.join_selected();
-            let sound = matches!(action, Action::Play { .. });
+            let sound = matches!(action, Action::Play { .. } | Action::PlaySafeMode { .. });
             return (action, sound);
         }
         // A Realms list has Enter too: `ServerEntry.keyPressed` creates an uninitialized
@@ -3766,7 +3835,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         match &self.mode {
             // OptimizeWorldScreen: `shouldCloseOnEsc` is false; the Backup wait takes no input.
-            Mode::Backup { .. } | Mode::Optimize { .. } => {}
+            // DatapackLoadFailureScreen.shouldCloseOnEsc is false.
+            Mode::Backup { .. } | Mode::Optimize { .. } | Mode::DatapackFailure { .. } => {}
             Mode::MissingMods { .. } => self.leave_closed_for_missing_mods(),
             // BackupConfirmScreen.keyPressed: Escape runs `onCancel`, the Edit World screen again.
             Mode::OptimizeConfirm { world, name, .. } | Mode::AdoptBiomeRegions { world, name } => {

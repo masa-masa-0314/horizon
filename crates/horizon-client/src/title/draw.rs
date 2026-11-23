@@ -695,6 +695,20 @@ impl Title {
                 phases(crate::screen_draw::RenderPhase::Background, batch);
                 self.draw_missing_mods(atlas, batch, (w, h), missing)
             }
+            Mode::DatapackFailure { .. } => {
+                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+                phases(crate::screen_draw::RenderPhase::Background, batch);
+                centered(
+                    atlas,
+                    batch,
+                    &lang::get_or(
+                        "horizon.datapack_failure.title",
+                        "Failed to load the world's data packs",
+                    ),
+                    70.0,
+                    u32::MAX,
+                );
+            }
             Mode::MultiplayerWarning { check } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
                 phases(crate::screen_draw::RenderPhase::Background, batch);

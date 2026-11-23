@@ -2187,6 +2187,63 @@ fn low_disk_space_asks_to_continue_or_go_back() {
 }
 
 #[test]
+fn datapack_failure_offers_safe_mode_or_back() {
+    let mut f = Fixture::new();
+    f.world("Broken", "Broken");
+    let world = only_world(&f);
+    f.title.mode = Mode::DatapackFailure {
+        world: world.clone(),
+    };
+    let labels: Vec<String> = f
+        .title
+        .buttons(480.0, 262.0)
+        .into_iter()
+        .map(|b| b.label)
+        .collect();
+    assert_eq!(labels, ["Safe Mode", "Back"]);
+    assert_eq!(
+        f.click("Safe Mode"),
+        Action::PlaySafeMode {
+            folder: "Broken".into()
+        }
+    );
+    f.title.mode = Mode::DatapackFailure { world };
+    assert_eq!(f.click("Back"), Action::None);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+}
+
+#[test]
+fn safe_mode_failure_alert_goes_back_to_world_list_when_gated() {
+    let mut f = Fixture::new();
+    f.world("Broken", "Broken");
+    let world = only_world(&f);
+    f.title.mode = Mode::DatapackFailure { world };
+    f.title.gated = true;
+    f.title.datapack_safe_mode_failed("Broken");
+    let requested = f
+        .title
+        .take_requested()
+        .expect("the gated title queues the alert");
+    let (message, return_to) = match requested {
+        Mode::Error {
+            message, return_to, ..
+        } => (message, return_to),
+        other => panic!("expected the Safe Mode failure alert, got {other:?}"),
+    };
+    assert!(matches!(return_to.as_ref(), Mode::Select { .. }));
+    // Back in the alert, as the game applies it, returns to the list instead of the
+    // datapack failure screen that was current when the alert was made.
+    f.title.mode = Mode::Error {
+        message,
+        return_to,
+        alert: None,
+    };
+    f.title.gated = false;
+    assert_eq!(f.click("Back"), Action::None);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+}
+
+#[test]
 fn a_world_opened_by_name_with_unreadable_level_data_shows_the_recovery_screen() {
     let mut f = Fixture::new();
     // No such world yet: it opens (and is made) as usual.

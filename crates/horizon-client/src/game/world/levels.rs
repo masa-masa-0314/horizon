@@ -751,12 +751,18 @@ impl Game<'_> {
             Some((generate, seed)) => (Some(generate), seed),
             None => (None, self.level.seed),
         };
+        let packs_root = if self.pack_root.as_os_str().is_empty() {
+            &self.world_root
+        } else {
+            &self.pack_root
+        };
         let (streaming, save, locator) = super::world_loading::make_streaming(
             &self.res,
             &self.pack,
             &self.options,
             &self.settings,
             &self.world_root,
+            packs_root,
             dim,
             self.level_shapes.get(dim.id()),
             seed,

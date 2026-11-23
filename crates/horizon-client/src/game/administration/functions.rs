@@ -337,7 +337,17 @@ impl Game<'_> {
     // ---- loading -----------------------------------------------------------
 
     fn datapack_settings_path(&self) -> std::path::PathBuf {
-        self.world_root.join("datapacks.json")
+        // Safe Mode's `/datapack` edits stay in its session folder instead of being written
+        // back to the world, so the next normal open does not adopt them.
+        self.datapack_root().join("datapacks.json")
+    }
+    /// The world's data-pack folder, or Safe Mode's empty one when one was set.
+    fn datapack_root(&self) -> &std::path::Path {
+        if self.pack_root.as_os_str().is_empty() {
+            &self.world_root
+        } else {
+            &self.pack_root
+        }
     }
     /// Discover and load the data packs of the world (once, or on `/reload`).
     pub(super) fn ensure_datapacks(&mut self) {
@@ -345,6 +355,28 @@ impl Game<'_> {
             return;
         }
         let _ = self.reload_datapacks(false, &self.level.enabled_features.clone());
+    }
+    /// `WorldOpenFlows.openWorldLoadLevelStem`'s first try, before the server starts: read and
+    /// bind the world's data packs. `packs_root` is the world's data-pack folder, or an empty
+    /// folder for Safe Mode. No lock is taken and nothing is published.
+    pub(in crate::game) fn validate_world_packs(
+        &self,
+        packs_root: &std::path::Path,
+        enabled_features: &[String],
+    ) -> Result<(), String> {
+        let additional = super::pack_finders::data_packs(&self.mods);
+        pack_stack(
+            packs_root,
+            &self.options.resources,
+            &self.pack.data_source,
+            &self.pack.data_changes,
+            self.cmds.vanilla_disabled,
+            enabled_features,
+            &additional,
+        )
+        .validate()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
     }
     pub(super) fn open_world_datapacks(
         &mut self,
@@ -400,7 +432,7 @@ impl Game<'_> {
             .map_or(&self.pack.data_changes, |root| root.data_changes());
         let additional = super::pack_finders::data_packs(&self.mods);
         let stack = pack_stack(
-            &self.world_root,
+            self.datapack_root(),
             &resources,
             data,
             changes,
@@ -1532,7 +1564,7 @@ impl Game<'_> {
         // (`ServerFunctionManager` keeps its queue over a pack change).
         let additional = super::pack_finders::data_packs(&self.mods);
         let mut stack = pack_stack(
-            &self.world_root,
+            self.datapack_root(),
             &self.options.resources,
             &self.pack.data_source,
             &self.pack.data_changes,

@@ -3,6 +3,44 @@ use serde_json::json;
 
 #[test]
 #[ignore = "daily"]
+fn validation_rejects_a_world_predicate_without_a_type() {
+    crate::game::native_entity_refs::tests::with_game(|game| {
+        let dir = datapack::temp_folder().unwrap();
+        let pack = dir.join("datapacks").join("old");
+        std::fs::create_dir_all(pack.join("data/prg/predicate")).unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            json!({
+                "pack": {
+                    "description": "old predicate",
+                    "min_format": [121, 0],
+                    "max_format": [121, 0]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            pack.join("data/prg/predicate/old.json"),
+            json!({"condition": "minecraft:any_of", "terms": []}).to_string(),
+        )
+        .unwrap();
+
+        let error = game.validate_world_packs(&dir, &[]).unwrap_err();
+        assert!(error.contains("No key type"), "{error}");
+        // Safe Mode reads an empty folder, so the world's broken pack is not considered.
+        assert!(game
+            .validate_world_packs(
+                &crate::game::world_loading::create_safe_pack_root().unwrap(),
+                &[]
+            )
+            .is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    });
+}
+
+#[test]
+#[ignore = "daily"]
 fn failed_pack_selection_keeps_the_live_library_and_saved_selection() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         let dir = datapack::temp_folder().unwrap();

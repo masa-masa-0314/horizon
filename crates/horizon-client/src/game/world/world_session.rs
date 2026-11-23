@@ -48,6 +48,9 @@ impl Game<'_> {
                 self.clipboard.set(&text);
             }
             Action::Play { folder } => self.open_existing_world(&folder)?,
+            Action::PlaySafeMode { folder } => {
+                self.open_world_as(&folder, None, None, false, None, true, true)?
+            }
             Action::Create {
                 folder,
                 name,
@@ -94,13 +97,13 @@ impl Game<'_> {
         creative: bool,
         create: Option<&horizon_client::title::WorldOptions>,
     ) -> Result<()> {
-        self.open_world_as(folder, name, seed, creative, create, false)
+        self.open_world_as(folder, name, seed, creative, create, false, false)
     }
 
     /// A world the title listed (Play, or a native mod's request answered Yes): it opens only while the
     /// save still exists, and nothing is created for a folder that is gone.
     pub(super) fn open_existing_world(&mut self, folder: &str) -> Result<()> {
-        self.open_world_as(folder, None, None, false, None, true)
+        self.open_world_as(folder, None, None, false, None, true, false)
     }
 
     /// `open_world`, with `existing_only` set for a save that must already be there (see
@@ -114,6 +117,7 @@ impl Game<'_> {
         creative: bool,
         create: Option<&horizon_client::title::WorldOptions>,
         existing_only: bool,
+        safe_mode: bool,
     ) -> Result<()> {
         let saves = std::env::current_dir()?.join("saves");
         if refuses_missing_save(&saves, folder, existing_only) {
@@ -136,6 +140,7 @@ impl Game<'_> {
             creative,
             create: create.cloned().map(Box::new),
             existing_only,
+            safe_mode,
         })? {
             return Ok(());
         }
@@ -157,6 +162,50 @@ impl Game<'_> {
             }
         }
         self.join_world_rest()?;
+        // One empty folder per Safe Mode attempt, made before the pack preflight and shared by
+        // the client's biome table and the integrated server.
+        let pack_root = if safe_mode {
+            match world_loading::create_safe_pack_root() {
+                Ok(root) => Some(root),
+                Err(error) => {
+                    log::warn!("Horizon: Safe Mode folder for \"{folder}\": {error}");
+                    if let Some(title) = self.title.as_mut() {
+                        title.datapack_safe_mode_failed(folder);
+                        return Ok(());
+                    }
+                    return Err(error.into());
+                }
+            }
+        } else {
+            None
+        };
+        // WorldOpenFlows.openWorldLoadLevelStem: bind the world's data packs before the server
+        // starts, so a stale pack reaches DatapackLoadFailureScreen instead of a fatal
+        // integrated-server error. Safe Mode reads an empty pack folder instead.
+        if create.is_none() {
+            let world = std::env::current_dir()?.join("saves").join(folder);
+            let has_world_packs =
+                world.join("datapacks.json").is_file() || world.join("datapacks").is_dir();
+            if has_world_packs
+                && let Some(level) = horizon_client::save::Level::read(&world)
+            {
+                let packs_root = pack_root.as_deref().unwrap_or(&world);
+                if let Err(error) =
+                    self.validate_world_packs(packs_root, &level.enabled_features)
+                {
+                    log::warn!("Horizon: world \"{folder}\" data packs: {error}");
+                    if let Some(title) = self.title.as_mut() {
+                        if safe_mode {
+                            title.datapack_safe_mode_failed(folder);
+                        } else {
+                            title.ask_datapack_failure(folder);
+                        }
+                        return Ok(());
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
         // Create World's data packs, in the world before it opens.
         if let Some(dir) = create.and_then(|o| o.pack_dir.as_deref()) {
             let world = std::env::current_dir()?.join("saves").join(folder);
@@ -206,7 +255,26 @@ impl Game<'_> {
                 horizon_core::VANILLA_VERSION
             ),
         );
-        self.open_integrated(folder, name, seed, creative, create)
+        match self.open_integrated_with_safe_mode(
+            folder,
+            name,
+            seed,
+            creative,
+            create,
+            safe_mode,
+            pack_root,
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) if safe_mode => {
+                log::warn!("Horizon: world \"{folder}\" failed in Safe Mode: {error}");
+                if let Some(title) = self.title.as_mut() {
+                    title.datapack_safe_mode_failed(folder);
+                    return Ok(());
+                }
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Load authoritative world state synchronously, without client entry or

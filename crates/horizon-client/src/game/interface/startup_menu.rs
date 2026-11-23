@@ -88,6 +88,7 @@ impl StartupMenu {
                     creative: options.creative,
                     create: None,
                     existing_only: false,
+                    safe_mode: false,
                 })
         };
         let mut menu = Self {
@@ -249,6 +250,16 @@ impl StartupMenu {
                 creative: false,
                 create: None,
                 existing_only: true,
+                safe_mode: false,
+            },
+            Action::PlaySafeMode { folder } => PendingWorldEntry::Local {
+                folder,
+                name: None,
+                seed: None,
+                creative: false,
+                create: None,
+                existing_only: true,
+                safe_mode: true,
             },
             Action::Create {
                 folder,
@@ -263,6 +274,7 @@ impl StartupMenu {
                 creative,
                 create: Some(Box::new(options)),
                 existing_only: false,
+                safe_mode: false,
             },
             Action::Connect {
                 address,
@@ -1612,6 +1624,7 @@ mod tests {
                         creative: true,
                         create: Some(Box::new(options)),
                         existing_only: false,
+                        safe_mode: false,
                     }),
                     ..Default::default()
                 };

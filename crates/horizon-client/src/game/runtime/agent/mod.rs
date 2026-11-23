@@ -712,6 +712,9 @@ impl Game<'_> {
             Mode::MissingMods { world, missing } => {
                 json!({ "mode": "missing-mods", "folder": world.folder, "name": world.name, "missing": missing.iter().map(|m| json!({ "mod": m.id, "saved_version": m.saved_version, "code": m.code, "content": m.content, "blocks": m.blocks })).collect::<Vec<_>>() })
             }
+            Mode::DatapackFailure { world } => {
+                json!({ "mode": "datapack-failure", "folder": world.folder, "name": world.name })
+            }
             Mode::Recover { world, issues } => {
                 let issue = |i: &Option<horizon_client::save::DatIssue>| match i {
                     None => json!(null),
