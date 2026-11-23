@@ -209,15 +209,15 @@ mod tests {
         };
         let key = super::super::LightmapKey::new(&sky, 0.05, 0.5, 0.0, 0.0, 0.0, false);
         let vanilla = [7u8; 16 * 16 * 4];
+        let white = [255u8; 16 * 16 * 4];
         // The pack's draw is in, fullbright off: steady state draws nothing.
         let (uploaded, mut from_cpu, drawn_key) = (true, false, Some(key));
         assert!(!super::super::Renderer::pack_lightmap_needs_draw(
             uploaded, from_cpu, drawn_key, &key
         ));
         // Fullbright on: the CPU overwrites the texture with white.
-        let white = [255u8; 16 * 16 * 4];
         assert!(super::super::Renderer::cpu_lightmap_needs_upload(
-            &white, &vanilla, uploaded, from_cpu
+            &white, &vanilla, uploaded
         ));
         from_cpu = true;
         // Fullbright off, every input unchanged: the pack redraws.
@@ -225,12 +225,13 @@ mod tests {
             uploaded, from_cpu, drawn_key, &key
         ));
         from_cpu = false;
-        // And the steady states do nothing again.
+        // And the steady states do nothing again: the pack is drawn and the
+        // CPU's table is unchanged.
         assert!(!super::super::Renderer::pack_lightmap_needs_draw(
             uploaded, from_cpu, drawn_key, &key
         ));
         assert!(!super::super::Renderer::cpu_lightmap_needs_upload(
-            &white, &white, uploaded, from_cpu
+            &vanilla, &vanilla, uploaded
         ));
     }
 

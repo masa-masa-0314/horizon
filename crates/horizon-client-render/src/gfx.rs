@@ -7643,15 +7643,16 @@ impl Renderer {
         !uploaded || from_cpu || key != Some(*next)
     }
     /// Whether the CPU-built lightmap re-uploads this frame: it differs from
-    /// the last table, or nothing drew the texture yet, or the pack's shader
-    /// drew it last (a fullbright toggle overwrote the CPU's build).
+    /// the last table, or nothing drew the texture yet. (`lightmap_pixels`
+    /// keeps the vanilla formula's table even while the pack's shader draws
+    /// the texture, so an unchanged table after a pack draw is the CPU back
+    /// at its steady state — the pack's next draw, not the CPU's, reacts.)
     fn cpu_lightmap_needs_upload(
         pixels: &[u8; 16 * 16 * 4],
         table: &[u8; 16 * 16 * 4],
         uploaded: bool,
-        from_cpu: bool,
     ) -> bool {
-        pixels != table || !uploaded || !from_cpu
+        pixels != table || !uploaded
     }
     fn update_lightmap(
         &mut self,
@@ -7730,12 +7731,8 @@ impl Renderer {
         // The lightmap changes with the time of day, flicker and effects,
         // not every frame: upload only what differs from the texture.
         self.lightmap_key = Some(key);
-        if !Self::cpu_lightmap_needs_upload(
-            &pixels,
-            &self.lightmap_pixels,
-            self.lightmap_uploaded,
-            self.lightmap_from_cpu,
-        ) {
+        if !Self::cpu_lightmap_needs_upload(&pixels, &self.lightmap_pixels, self.lightmap_uploaded)
+        {
             return;
         }
         self.uploads.texture(
