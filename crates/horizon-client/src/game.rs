@@ -1026,6 +1026,9 @@ struct Game<'a> {
     bundle_mouse: bundles::BundleMouse,
     /// The last inventory click, for the double click that gathers a stack.
     last_inv_click: Option<(std::time::Instant, Option<usize>, bool)>,
+    /// The pending double click (`doubleclick`): its release gathers or
+    /// quick-moves (`mouseReleased`).
+    inv_double_click: bool,
     /// `lastQuickMoved`: what the last Shift click moved, which a Shift
     /// double click moves every stack of.
     last_quick_moved: Option<ItemStack>,
@@ -11159,6 +11162,7 @@ impl<'a> Game<'a> {
             bundle_mouse: Default::default(),
             inv_clicks: Default::default(),
             last_inv_click: None,
+            inv_double_click: false,
             last_quick_moved: None,
             container: None,
             open_container_slots: None,

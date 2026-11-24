@@ -108,7 +108,8 @@ impl Game<'_> {
         }
     }
     /// The plain inventory mouse press: starts a quick craft drag when a
-    /// stack is held, gathers on a double click, else the normal click.
+    /// stack is held, else the normal click. A double click gathers on the
+    /// release (`mouseReleased`).
     pub(super) fn inventory_press(&mut self, right: bool) {
         use horizon_client::container_screen::Target;
         use horizon_client::menu::Input;
@@ -140,6 +141,9 @@ impl Game<'_> {
             right,
             std::time::Instant::now(),
         );
+        // mouseClicked: `doubleclick` is the same slot and button again; it
+        // sticks until the release decides what the chain does.
+        self.inv_double_click = double;
         let shift = self.has_shift_down();
         let target = Target::of(slot, outside);
         let input = self.inv_clicks.press(
@@ -170,55 +174,17 @@ impl Game<'_> {
         {
             // mouseClicked's QUICK_MOVE (and Horizon's at-press QUICK_MOVE
             // of a carried stack, mouseReleased's in vanilla) remember the
-            // stack it moves.
+            // stack it moves. The hotkeyless sequence's second press has no
+            // Shift and leaves `lastQuickMoved` for the release.
             if input == Some(Input::QuickMove) || (self.carried.is_some() && !double) {
                 self.last_quick_moved = self.slot_view(slot);
-            }
-            if double && !right {
-                // mouseReleased: every stack of lastQuickMoved's item in the
-                // clicked slot's container is quick-moved.
-                if let Some(input) = input
-                    && !self.click_open_inventory(Some(slot), 0, input)
-                {
-                    // A screen the menu engine doesn't model: its own click.
-                    self.click_inventory(right);
-                    return;
-                }
-                if let Some(moved) = self.last_quick_moved.clone() {
-                    // The creative screen clicks its own menu, on a server too.
-                    if self.remote.is_some() && self.screen != Screen::Creative {
-                        self.remote_quick_move_all(slot, &moved);
-                    } else {
-                        self.menu_session(|menu, env, to_menu| {
-                            Some(menu.quick_move_all(env, to_menu(slot)?, &moved).is_ok())
-                        });
-                        if self.remote.is_some() {
-                            self.send_creative_slots();
-                        }
-                    }
-                }
-                self.last_inv_click = None;
-                self.inv_clicks.skip_release();
-                return;
             }
         }
         if let Some(slot) = slot
             && slot != 200
         {
-            // An item tab's display slots take no drags or PICKUP_ALL.
+            // An item tab's display slots take no drags.
             let display = slot >= Creative::DISPLAY;
-            let double = double
-                && !shift
-                && !right
-                && !display
-                && self.carried.is_some()
-                && self.pick_all_allowed(slot);
-            if double && self.click_open_inventory(Some(slot), 0, Input::PickupAll) {
-                self.last_inv_click = None;
-                // The double click's own release (`mouseReleased`'s PICKUP_ALL).
-                self.inv_clicks.skip_release();
-                return;
-            }
             if self.carried.is_some() {
                 let ty = i32::from(right);
                 // `mouseClicked` starts a quick craft drag whenever the hand holds a stack,
@@ -442,8 +408,43 @@ impl Game<'_> {
     /// cancels the drag, drops a stack released outside, or clicks.
     pub(super) fn inventory_mouse_release(&mut self, right: bool) {
         use horizon_client::container_screen::{Release, Target};
+        use horizon_client::menu::Input;
         self.tweak_release();
         let (slot, outside) = self.inventory_target();
+        // mouseReleased's double click: on the release ending the chain, a
+        // Shift still held quick-moves every stack of `lastQuickMoved`'s
+        // item in this container (the hotkeyless sequence's second press
+        // has no Shift and left `lastQuickMoved`), without Shift the click
+        // gathers the hovered stack (#20651).
+        if self.inv_double_click
+            && !right
+            && !outside
+            && let Some(slot) = slot
+            && self.pick_all_allowed(slot)
+        {
+            self.inv_double_click = false;
+            self.inv_drag = None;
+            self.inv_clicks.skip_release();
+            if self.has_shift_down() {
+                if let Some(moved) = self.last_quick_moved.clone() {
+                    // The creative screen clicks its own menu, on a server too.
+                    if self.remote.is_some() && self.screen != Screen::Creative {
+                        self.remote_quick_move_all(slot, &moved);
+                    } else {
+                        self.menu_session(|menu, env, to_menu| {
+                            Some(menu.quick_move_all(env, to_menu(slot)?, &moved).is_ok())
+                        });
+                        if self.remote.is_some() {
+                            self.send_creative_slots();
+                        }
+                    }
+                }
+            } else if !self.click_open_inventory(Some(slot), 0, Input::PickupAll) {
+                // A screen the menu engine doesn't model: its own click.
+                self.click_inventory(right);
+            }
+            return;
+        }
         let dragged = self.inv_drag.as_ref().is_some_and(|(_, s)| !s.is_empty());
         let release = self.inv_clicks.release(
             &Target::of(slot, outside),

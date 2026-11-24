@@ -988,6 +988,10 @@ impl Game<'_> {
         self.inv_clicks.cancel_drag();
         self.inv_drag = None;
         self.last_inv_click = None;
+        // A fresh `AbstractContainerScreen` starts with no pending double
+        // click and an empty `lastQuickMoved`.
+        self.inv_double_click = false;
+        self.last_quick_moved = None;
     }
 
     /// A sound a menu click made the player play (a bundle's insert or
