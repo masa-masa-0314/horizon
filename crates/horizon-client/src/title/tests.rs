@@ -2230,7 +2230,10 @@ fn safe_mode_failure_alert_goes_back_to_world_list_when_gated() {
             return_to,
             alert: Some(Alert::SafeMode),
         } => {
-            assert_eq!(message, "This world contains invalid or corrupted save data.");
+            assert_eq!(
+                message,
+                "This world contains invalid or corrupted save data."
+            );
             assert!(matches!(return_to.as_ref(), Mode::Select { .. }));
         }
         other => panic!("expected the Safe Mode failure alert, got {other:?}"),

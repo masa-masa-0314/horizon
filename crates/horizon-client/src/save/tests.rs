@@ -6,7 +6,10 @@ fn saving_safe_mode_replaces_the_old_datapack_selection() {
     let root = tempfile::tempdir().unwrap();
     let mut initial = Level {
         name: "Safe Mode".into(),
-        data_packs: Some((vec!["vanilla".into(), "file/broken".into()], vec!["file/other".into()])),
+        data_packs: Some((
+            vec!["vanilla".into(), "file/broken".into()],
+            vec!["file/other".into()],
+        )),
         ..Level::default()
     };
     initial.write(root.path()).unwrap();

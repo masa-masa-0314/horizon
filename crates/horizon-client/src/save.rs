@@ -4477,7 +4477,7 @@ impl Level {
                     Tag::List(self.enabled_features.iter().map(|s| string(s)).collect()),
                 );
             } else if vanilla_only {
-                map.remove("enabled_features");
+                map.remove(&"enabled_features".into());
             }
             let pack_config = |enabled: &[String], disabled: &[String]| {
                 let list = |ids: &[String]| Tag::List(ids.iter().map(|s| string(s)).collect());
