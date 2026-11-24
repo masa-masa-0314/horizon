@@ -1,6 +1,19 @@
 use super::*;
 
 impl Title {
+    /// The focused label on a `GenericMessageScreen`.
+    pub(crate) fn draw_generic_message(atlas: &HudAtlas, batch: &mut HudBatch, text: &str) {
+        let tw = atlas.font.width_text(&Text::literal(text));
+        let tx = (batch.width.ceil() / 2.0).floor() - (tw.ceil() / 2.0).floor();
+        let ty = (batch.height.ceil() / 2.0).floor() - 4.0;
+        // `FocusableTextWidget.builder(title, font, 12)`.
+        let (bx, by) = (tx - 12.0, ty - 12.0);
+        let (bw, bh) = (tw + 24.0, 9.0 + 24.0);
+        batch.fill(atlas, bx - 1.0, by - 1.0, bw + 2.0, bh + 2.0, 0xFFD0D0D0);
+        batch.fill(atlas, bx, by, bw, bh, 0xFF000000);
+        batch.text(atlas, text, tx, ty, u32::MAX, false);
+    }
+
     /// The question of `Mode::WorldRequest`: its title, then the mod and the save in the message area, which
     /// scrolls when the names are long. Yes and No sit below it, always inside the viewport.
     fn draw_world_request(
@@ -673,6 +686,11 @@ impl Title {
                             "The world folder contains links",
                             u32::MAX,
                         ),
+                        Alert::SafeMode => (
+                            "datapackFailure.safeMode.failed.title",
+                            SAFE_MODE_FAILURE_TITLE,
+                            u32::MAX,
+                        ),
                     };
                     (70.0, 90.0, key, fallback, color)
                 } else {
@@ -698,16 +716,14 @@ impl Title {
             Mode::DatapackFailure { .. } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
                 phases(crate::screen_draw::RenderPhase::Background, batch);
-                centered(
-                    atlas,
-                    batch,
-                    &lang::get_or(
-                        "horizon.datapack_failure.title",
-                        "Failed to load the world's data packs",
-                    ),
-                    70.0,
-                    u32::MAX,
-                );
+                let message = lang::get_or("datapackFailure.title", DATAPACK_FAILURE_MESSAGE);
+                for (i, line) in message
+                    .split('\n')
+                    .flat_map(|line| wrapped(atlas, line, w - 50.0))
+                    .enumerate()
+                {
+                    centered(atlas, batch, &line, 70.0 + i as f32 * 9.0, u32::MAX);
+                }
             }
             Mode::MultiplayerWarning { check } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);

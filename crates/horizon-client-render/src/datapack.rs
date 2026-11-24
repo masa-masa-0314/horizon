@@ -1353,6 +1353,31 @@ pub fn enabled_ids(world: &Path, packs: &[DataPack], enabled_features: &[String]
     selected_ids(packs.iter(), &enabled)
 }
 
+/// Safe Mode starts with vanilla (represented separately by the caller), then inserts
+/// required packs and the feature packs needed by the world's existing flags. Available
+/// world packs stay in the repository, but a saved selection cannot enable them here.
+pub fn safe_mode_ids(packs: &[DataPack], forced_features: &[String]) -> Vec<String> {
+    let mut selected = selected_ids(packs.iter(), &[]);
+    let mut covered = vec!["minecraft:vanilla".to_owned()];
+    for pack in packs.iter().filter(|p| selected.contains(&p.id)) {
+        covered.extend(pack.features());
+    }
+    let mut features: Vec<_> = packs.iter().filter(|p| p.is_feature()).collect();
+    features.sort_by(|a, b| a.id.cmp(&b.id));
+    for pack in features {
+        let flags = pack.features();
+        if flags.iter().all(|flag| forced_features.contains(flag))
+            && flags
+                .iter()
+                .any(|flag| forced_features.contains(flag) && !covered.contains(flag))
+        {
+            selected.push(pack.id.clone());
+            covered.extend(flags);
+        }
+    }
+    selected_ids(packs.iter(), &selected)
+}
+
 /// Rebuild a data-pack selection, preserving its order and inserting required packs.
 pub fn selected_ids<'a>(
     packs: impl Iterator<Item = &'a DataPack>,
@@ -1468,6 +1493,43 @@ pub fn worldgen_overrides_over(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_mode_keeps_world_packs_available_but_only_selects_needed_feature_packs() {
+        let root = tempfile::tempdir().unwrap();
+        let features = root.path().join("resources/data/minecraft/datapacks");
+        let world_pack = root.path().join("world/datapacks/broken");
+        let first = "minecraft:trade_rebalance";
+        let second = "minecraft:redstone_experiments";
+        for (path, flags) in [
+            (world_pack, vec![]),
+            (features.join("a"), vec![first]),
+            (features.join("b"), vec![first]),
+            (features.join("c"), vec![second]),
+            (
+                features.join("0"),
+                vec![first, "minecraft:minecart_improvements"],
+            ),
+        ] {
+            std::fs::create_dir_all(&path).unwrap();
+            let meta = serde_json::json!({
+                "pack": {
+                    "description": "",
+                    "min_format": horizon_core::version::DATA_PACK_FORMAT,
+                    "max_format": horizon_core::version::DATA_PACK_FORMAT,
+                },
+                "features": {"enabled": flags},
+            });
+            std::fs::write(path.join("pack.mcmeta"), meta.to_string()).unwrap();
+        }
+        let packs =
+            discover_with_features(&root.path().join("world"), &root.path().join("resources"));
+        assert!(packs.iter().any(|pack| pack.id == "file/broken"));
+        assert_eq!(
+            safe_mode_ids(&packs, &[second.into(), first.into()]),
+            ["a", "c"]
+        );
+    }
 
     #[test]
     fn a_pack_level_outside_the_worlds_folder_is_not_a_level() {

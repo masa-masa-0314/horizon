@@ -76,6 +76,12 @@ impl Game<'_> {
                 self.options.execution_role,
             )?;
         }
+        if self.safe_mode_worldgen && let Some((enabled, disabled)) = &self.level.data_packs {
+            // Horizon's ordinary loader still reads this sidecar. Keep it in step with
+            // level.dat without treating unselected packs as disabled on a Safe Mode open.
+            let json = serde_json::json!({"enabled": enabled, "disabled": disabled});
+            std::fs::write(self.world_root.join("datapacks.json"), json.to_string())?;
+        }
         // PlayerEvent.SaveToFile for the owner, once level.dat is written.
         if let Some((uuid, name)) = stored_owner {
             let directory = horizon_client::lan::playerdata::directory(&self.world_root);

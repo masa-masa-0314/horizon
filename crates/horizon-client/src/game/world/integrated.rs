@@ -127,6 +127,8 @@ struct Flags {
     /// What the server's `LevelLoadListener` reports, for the window's
     /// `LevelLoadingScreen` (`LevelLoadTracker.serverProgress/statusView`).
     load: Arc<horizon_client::level_loading::ServerLoadView>,
+    /// The saved world's data and generators have loaded, before spawn preparation.
+    resources_ready: AtomicBool,
     /// What the world's upgrade has done (`UpgradeProgress`): the window shows it on
     /// `FileFixerProgressScreen` while the file fixers run, and its Cancel stops them.
     upgrade: Arc<horizon_world::datafix::progress::UpgradeProgress>,
@@ -452,7 +454,7 @@ enum Publish {
 
 /// What the server thread hands the window once the world is open: its end
 /// of the connection and the world's name, or why it failed.
-type Ready = std::result::Result<(Pipe, String), String>;
+type Ready = std::result::Result<(Pipe, String), super::world_loading::OpenFailure>;
 
 /// An integrated server loading its world: the window keeps drawing its
 /// loading screen and joins once the server is ready, as vanilla's client
@@ -470,6 +472,20 @@ pub(super) struct Starting {
     /// `DatapackLoadFailureScreen`'s Safe Mode: a startup failure goes back to the title
     /// instead of the fatal-error path.
     safe_mode: bool,
+    /// Vanilla presents the resource message once even when the resources load immediately.
+    resource_frame_pending: std::cell::Cell<bool>,
+}
+
+impl Starting {
+    pub(super) fn preparing_resources(&self) -> bool {
+        !self.new_world
+            && (self.resource_frame_pending.get()
+                || !self.handle.flags.resources_ready.load(Ordering::Acquire))
+    }
+
+    pub(super) fn resource_frame_drawn(&self) {
+        self.resource_frame_pending.set(false);
+    }
 }
 
 /// The world to open and the player who owns it.
@@ -489,8 +505,6 @@ struct Launch {
     owner_profile: Option<Arc<OwnerProfile>>,
     /// DatapackLoadFailureScreen's Safe Mode: the world's data packs are left out.
     safe_mode: bool,
-    /// The empty folder this session's Safe Mode reads, made once by `open_world_as`.
-    pack_root: Option<std::path::PathBuf>,
 }
 
 impl Game<'_> {
@@ -541,7 +555,7 @@ impl Game<'_> {
         creative: bool,
         create: Option<&WorldOptions>,
     ) -> Result<()> {
-        self.open_integrated_with_safe_mode(folder, name, seed, creative, create, false, None)
+        self.open_integrated_with_safe_mode(folder, name, seed, creative, create, false)
     }
     /// `open_integrated`, with `DatapackLoadFailureScreen`'s Safe Mode: the world opens without
     /// its own data packs.
@@ -553,7 +567,6 @@ impl Game<'_> {
         creative: bool,
         create: Option<&WorldOptions>,
         safe_mode: bool,
-        pack_root: Option<std::path::PathBuf>,
     ) -> Result<()> {
         self.client_logging_out();
         horizon_client::command::vanilla::set_horizon_commands(
@@ -601,8 +614,6 @@ impl Game<'_> {
                 }))
             }),
             safe_mode,
-            // The window's biome table below reads the same folder after the launch moved it.
-            pack_root: pack_root.clone(),
         };
         let mut options = self.options.clone();
         // A server without a console: no local player, no window, no control socket.
@@ -624,9 +635,8 @@ impl Game<'_> {
         let enabled_features = horizon_client::save::Level::read(&world)
             .map(|l| l.enabled_features)
             .unwrap_or_default();
-        let packs_root = pack_root.as_ref().unwrap_or(&world);
         self.world_biomes = Some(super::world_loading::packed_biomes(
-            packs_root,
+            super::pack_finders::WorldPacks { world: &world, safe_mode },
             &self.options.resources,
             self.res.biomes(),
             &enabled_features,
@@ -670,7 +680,7 @@ impl Game<'_> {
             if let Err(e) = result {
                 log::error!("Horizon: integrated server: {e}");
                 *server_flags.failure.lock().unwrap() = Some(e.to_string());
-                let _ = ready_tx.send(Err(e.to_string()));
+                let _ = ready_tx.send(Err(super::world_loading::OpenFailure::from_error(e)));
             }
         };
         // Production installations are process-wide. A test installation is scoped
@@ -695,6 +705,7 @@ impl Game<'_> {
             save_folder: folder.to_owned(),
             rule_registry,
         };
+        let synchronous = self.window.is_none() || super::synchronous_startup(&self.options);
         self.integrated_starting = Some(Starting {
             handle,
             ready,
@@ -702,9 +713,12 @@ impl Game<'_> {
             folder: folder.to_owned(),
             new_world,
             safe_mode,
+            resource_frame_pending: std::cell::Cell::new(
+                !synchronous && !new_world && self.title.is_some() && self.renderer.is_some(),
+            ),
         });
         // Harnesses, control scripts and runs without a window go on with the world open.
-        if self.window.is_none() || super::synchronous_startup(&self.options) {
+        if synchronous {
             while self.integrated_starting.is_some() {
                 self.poll_integrated_start()?;
                 if self.integrated_starting.is_some() {
@@ -724,6 +738,12 @@ impl Game<'_> {
         let Some(starting) = &self.integrated_starting else {
             return Ok(());
         };
+        if starting.resource_frame_pending.get()
+            && self.renderer.is_some()
+            && !starting.handle.upgrade().is_canceled()
+        {
+            return Ok(());
+        }
         let (pipe, world_name) = match starting.ready.try_recv() {
             Ok(Ok(ready)) => ready,
             Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
@@ -733,25 +753,24 @@ impl Game<'_> {
                 self.perf.cancel_world_opening();
                 return Ok(());
             }
-            Ok(Err(e)) => {
-                let Some((folder, safe_mode)) = self
-                    .integrated_starting
-                    .as_ref()
-                    .map(|starting| (starting.folder.clone(), starting.safe_mode))
-                else {
-                    return Ok(());
-                };
-                if safe_mode && self.title.is_some() {
-                    log::warn!("Horizon: world \"{folder}\" failed in Safe Mode: {e}");
-                    if let Some(title) = self.title.as_mut() {
+            Ok(Err(failure)) => {
+                if let super::world_loading::OpenFailure::Data(error) = &failure
+                    && !starting.new_world
+                    && let Some(title) = self.title.as_mut()
+                {
+                    let folder = starting.folder.clone();
+                    log::warn!("Horizon: world \"{folder}\" data packs: {error}");
+                    if starting.safe_mode {
                         title.datapack_safe_mode_failed(&folder);
+                    } else {
+                        title.ask_datapack_failure(&folder);
                     }
                     self.integrated_starting = None;
                     self.perf.cancel_world_opening();
                     return Ok(());
                 }
                 self.integrated_starting = None;
-                return Err(e.into());
+                return Err(failure.into_error());
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.integrated_starting = None;
@@ -1066,6 +1085,7 @@ impl Game<'_> {
         self.perf.world_opening();
         let open_step = startup::step("server.open_world");
         self.finish_open_world(prepared)?;
+        flags.resources_ready.store(true, Ordering::Release);
         drop(open_step);
         if let Some(sync) = opening.sync {
             startup::time("server.sync_adopt", || sync.adopt(&self.pack_files()));
@@ -1565,7 +1585,6 @@ fn serve(
     // (an older world's offline owner moves to it at open).
     .map(|request| request.owned_by(&launch.player, launch.owner))
     .map(|request| request.with_safe_mode(launch.safe_mode))
-    .map(|request| request.with_pack_root(launch.pack_root.clone()))
     .and_then(|request| {
         WorldLoader::start(
             request,

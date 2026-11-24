@@ -1434,9 +1434,8 @@ struct Game<'a> {
     sleep_seen: (i64, i64),
     dim: Dim,
     world_root: PathBuf,
-    /// The folder the world's data packs are read from: `world_root`, or an empty folder in
-    /// Safe Mode (`DatapackLoadFailureScreen`).
-    pack_root: PathBuf,
+    /// The initial Safe Mode generator selection, independent of later `/reload` calls.
+    safe_mode_worldgen: bool,
     carrier_retention_snapshot: Vec<(u128, u32)>,
     /// Offline-to-account UUID migration: loaded entities retain the old UUID until saved.
     owner_migration: Option<(u128, u128)>,
@@ -6412,7 +6411,7 @@ impl Game<'_> {
         let world_loading::PreparedWorld {
             save_root,
             shapes,
-            level,
+            mut level,
             world,
             biomes,
             streaming,
@@ -6422,13 +6421,13 @@ impl Game<'_> {
             locator,
             loot,
             owner_migration,
-            pack_root,
+            safe_mode,
         } = prepared;
         self.server_loot = loot;
         let dim = Dim::from_id(&level.dimension);
         self.level_shapes = shapes;
         self.world_root = save_root.clone();
-        self.pack_root = pack_root.unwrap_or_else(|| save_root.clone());
+        self.safe_mode_worldgen = safe_mode;
         // The root moves before the prepared level is installed. Until then a
         // final save must not run: the lock below only marks tag tables.
         self.world_adopted = false;
@@ -6443,7 +6442,23 @@ impl Game<'_> {
         self.end.set_locator(locator);
         self.share_spawn_conditions();
         self.score = Default::default();
-        let stack = self.open_world_datapacks(&level.enabled_features)?;
+        let stack = self.open_world_datapacks(&level.enabled_features, safe_mode)?;
+        if safe_mode {
+            // WorldDataConfiguration uses the selected packs and retains forced features.
+            let selected = std::iter::once("vanilla".to_owned())
+                .chain(stack.enabled.iter().cloned())
+                .collect();
+            level.data_packs = Some((selected, Vec::new()));
+            let mut features = level.enabled_features.to_vec();
+            for flag in std::iter::once("minecraft:vanilla".to_owned())
+                .chain(stack.enabled_packs().flat_map(|pack| pack.features()))
+            {
+                if !features.contains(&flag) {
+                    features.push(flag);
+                }
+            }
+            level.enabled_features = features.into();
+        }
         let root = self.options.resources.clone();
         self.invalidate_tagged_shader_ids();
         self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
@@ -8170,6 +8185,34 @@ impl Game<'_> {
                     );
                     pr.lap("pr_loading");
                     drop(prepare);
+                    return renderer.render(&loading_frame(&hud));
+                }
+                return Ok(false);
+            }
+            if starting.preparing_resources() {
+                let message = lang::get_or("selectWorld.resource_load", "Preparing Resources...");
+                horizon_client::widgets::begin_screen(|| {
+                    horizon_client::widgets::ScreenInfo::new("preparing_resources", message.clone())
+                });
+                if let Some(renderer) = &mut self.renderer {
+                    let mut hud = HudBatch::new(
+                        [renderer.config.width, renderer.config.height],
+                        self.settings.gui_scale_inputs(),
+                    );
+                    let (w, h) = (hud.width, hud.height);
+                    horizon_client::ui::menu_background(
+                        &mut hud,
+                        &self.gui.atlas,
+                        0.0,
+                        0.0,
+                        w,
+                        h,
+                        false,
+                    );
+                    Title::draw_generic_message(&self.gui.atlas, &mut hud, &message);
+                    pr.lap("pr_loading");
+                    drop(prepare);
+                    starting.resource_frame_drawn();
                     return renderer.render(&loading_frame(&hud));
                 }
                 return Ok(false);
@@ -11051,7 +11094,7 @@ impl<'a> Game<'a> {
             sleep_seen: (0, 0),
             dim: Dim::Overworld,
             world_root: PathBuf::new(),
-            pack_root: PathBuf::new(),
+            safe_mode_worldgen: false,
             carrier_retention_snapshot: Vec::new(),
             owner_migration: None,
             world_flat: false,

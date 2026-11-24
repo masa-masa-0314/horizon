@@ -4476,24 +4476,27 @@ impl Level {
                     "enabled_features".into(),
                     Tag::List(self.enabled_features.iter().map(|s| string(s)).collect()),
                 );
+            } else if vanilla_only {
+                map.remove("enabled_features");
             }
-            map.entry("DataPacks".into()).or_insert_with(|| {
-                let (enabled, disabled) = self.data_packs.clone().unwrap_or_else(|| {
-                    (
-                        vec!["vanilla".into()],
-                        [
-                            "minecart_improvements",
-                            "redstone_experiments",
-                            "trade_rebalance",
-                        ]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect(),
+            let pack_config = |enabled: &[String], disabled: &[String]| {
+                let list = |ids: &[String]| Tag::List(ids.iter().map(|s| string(s)).collect());
+                Tag::compound([("Enabled", list(enabled)), ("Disabled", list(disabled))])
+            };
+            if let Some((enabled, disabled)) = &self.data_packs {
+                map.insert("DataPacks".into(), pack_config(enabled, disabled));
+            } else {
+                map.entry("DataPacks".into()).or_insert_with(|| {
+                    pack_config(
+                        &["vanilla".into()],
+                        &[
+                            "minecart_improvements".into(),
+                            "redstone_experiments".into(),
+                            "trade_rebalance".into(),
+                        ],
                     )
                 });
-                let list = |ids: Vec<String>| Tag::List(ids.iter().map(|s| string(s)).collect());
-                Tag::compound([("Enabled", list(enabled)), ("Disabled", list(disabled))])
-            });
+            }
         }
         // Saved data: weather, clocks, and (when missing or legacy) world
         // generation settings and game rules. An upload's temporary world carries only

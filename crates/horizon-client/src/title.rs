@@ -260,7 +260,13 @@ pub enum Alert {
     /// `symlink_warning.title.world`
     /// (`NoticeWithLinkScreen.createWorldSymlinkWarningScreen`).
     Symlink,
+    /// `datapackFailure.safeMode.failed.title`.
+    SafeMode,
 }
+
+const DATAPACK_FAILURE_MESSAGE: &str = "Errors in the currently selected data pack(s) prevented the world from loading.\nYou can either try to load it with only the vanilla data pack (\"Safe Mode\"), or go back to the title screen and fix it manually.";
+const SAFE_MODE_FAILURE_TITLE: &str = "Failed to load world in Safe Mode";
+
 #[derive(Clone, Debug)]
 pub enum Mode {
     Main,
@@ -1421,8 +1427,8 @@ impl Title {
             self.set_mode(Mode::DatapackFailure { world });
         } else {
             self.failed(lang::get_or(
-                "horizon.datapack_failure.title",
-                "Failed to load the world's data packs",
+                "datapackFailure.title",
+                DATAPACK_FAILURE_MESSAGE,
             ));
         }
     }
@@ -1443,22 +1449,19 @@ impl Title {
                 .position(|world| world.folder == folder && self.matches_search(world));
             Mode::Select { worlds, selected }
         };
-        self.failed_with(
-            lang::get_or(
-                "horizon.datapack_failure.safe_mode.failed",
-                "The world could not be opened even without its data packs.",
+        self.set_mode(Mode::Error {
+            message: lang::get_or(
+                "datapackFailure.safeMode.failed.description",
+                "This world contains invalid or corrupted save data.",
             ),
-            return_to,
-        )
+            return_to: Box::new(return_to),
+            alert: Some(Alert::SafeMode),
+        });
     }
     pub fn failed(&mut self, error: impl std::fmt::Display) {
-        let return_to = self.mode.clone();
-        self.failed_with(error, return_to);
-    }
-    fn failed_with(&mut self, error: impl std::fmt::Display, return_to: Mode) {
         self.set_mode(Mode::Error {
             message: error.to_string(),
-            return_to: Box::new(return_to),
+            return_to: Box::new(self.mode.clone()),
             alert: None,
         });
     }
@@ -2142,10 +2145,7 @@ Running out of disk space while in game can lead to your world being damaged.",
             Mode::MissingMods { missing, .. } => missing_mods::screen_info(missing),
             Mode::DatapackFailure { .. } => ScreenInfo::new(
                 "datapack_failure",
-                get(
-                    "horizon.datapack_failure.title",
-                    "Failed to load the world's data packs",
-                ),
+                get("datapackFailure.title", DATAPACK_FAILURE_MESSAGE),
             ),
             Mode::AdoptBiomeRegions { .. } => edit_world::adopt_screen_info(),
             // AccessibilityOnboardingScreen narrates its title.
@@ -2221,6 +2221,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     Some(Alert::Symlink) => get(
                         "symlink_warning.title.world",
                         "The world folder contains links",
+                    ),
+                    Some(Alert::SafeMode) => get(
+                        "datapackFailure.safeMode.failed.title",
+                        SAFE_MODE_FAILURE_TITLE,
                     ),
                     None => get("selectWorld.access_failure", "Failed to access world"),
                 };

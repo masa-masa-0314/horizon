@@ -2224,20 +2224,20 @@ fn safe_mode_failure_alert_goes_back_to_world_list_when_gated() {
         .title
         .take_requested()
         .expect("the gated title queues the alert");
-    let (message, return_to) = match requested {
+    match &requested {
         Mode::Error {
-            message, return_to, ..
-        } => (message, return_to),
+            message,
+            return_to,
+            alert: Some(Alert::SafeMode),
+        } => {
+            assert_eq!(message, "This world contains invalid or corrupted save data.");
+            assert!(matches!(return_to.as_ref(), Mode::Select { .. }));
+        }
         other => panic!("expected the Safe Mode failure alert, got {other:?}"),
-    };
-    assert!(matches!(return_to.as_ref(), Mode::Select { .. }));
+    }
     // Back in the alert, as the game applies it, returns to the list instead of the
     // datapack failure screen that was current when the alert was made.
-    f.title.mode = Mode::Error {
-        message,
-        return_to,
-        alert: None,
-    };
+    f.title.mode = requested;
     f.title.gated = false;
     assert_eq!(f.click("Back"), Action::None);
     assert!(matches!(f.title.mode, Mode::Select { .. }));

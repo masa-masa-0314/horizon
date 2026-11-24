@@ -1,5 +1,23 @@
 use crate::mobs::spawner::SpawnDataExt;
 
+#[test]
+fn saving_safe_mode_replaces_the_old_datapack_selection() {
+    use super::Level;
+    let root = tempfile::tempdir().unwrap();
+    let mut initial = Level {
+        name: "Safe Mode".into(),
+        data_packs: Some((vec!["vanilla".into(), "file/broken".into()], vec!["file/other".into()])),
+        ..Level::default()
+    };
+    initial.write(root.path()).unwrap();
+    let mut level = Level::read(root.path()).unwrap();
+    assert_eq!(level.data_packs, initial.data_packs);
+    let selected = Some((vec!["vanilla".into()], vec![]));
+    level.data_packs = selected.clone();
+    level.write(root.path()).unwrap();
+    assert_eq!(Level::read(root.path()).unwrap().data_packs, selected);
+}
+
 /// A bare file name lives in the working directory: syncing its folder syncs `.`, not the
 /// empty path, so a durable write there that renamed its file into place also succeeds.
 #[test]

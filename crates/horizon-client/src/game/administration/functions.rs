@@ -230,10 +230,30 @@ pub(super) fn pack_stack(
     enabled_features: &[String],
     additional: &[Arc<DataPack>],
 ) -> PackStack {
-    let builtin = (!vanilla_disabled)
+    pack_stack_for(
+        super::pack_finders::WorldPacks::normal(world_root),
+        resources,
+        builtin_source,
+        content_source,
+        vanilla_disabled,
+        enabled_features,
+        additional,
+    )
+}
+
+fn pack_stack_for(
+    selection: super::pack_finders::WorldPacks<'_>,
+    resources: &std::path::Path,
+    builtin_source: &horizon_assets::resource_source::ResourceSource,
+    content_source: &horizon_assets::resource_source::ResourceSource,
+    vanilla_disabled: bool,
+    enabled_features: &[String],
+    additional: &[Arc<DataPack>],
+) -> PackStack {
+    let builtin = (selection.safe_mode || !vanilla_disabled)
         .then(|| DataPack::from_source("vanilla".into(), builtin_source.clone()));
-    let packs = super::pack_finders::data_repository(world_root, resources, additional);
-    let enabled = datapack::enabled_ids(world_root, &packs, enabled_features);
+    let packs = super::pack_finders::data_repository(selection.world, resources, additional);
+    let enabled = selection.enabled(&packs, enabled_features);
     PackStack {
         content: DataPack::from_source("horizon-content".into(), content_source.clone()),
         builtin,
@@ -329,25 +349,27 @@ impl FnState {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PackLoad {
     OpenWorld,
+    SafeMode,
     LibraryOnly,
     Reload,
+}
+
+enum PackLoadFailure {
+    Registry(ReloadStageError),
+    Other(ReloadStageError),
+}
+
+impl From<ReloadStageError> for PackLoadFailure {
+    fn from(error: ReloadStageError) -> Self {
+        Self::Other(error)
+    }
 }
 
 impl Game<'_> {
     // ---- loading -----------------------------------------------------------
 
     fn datapack_settings_path(&self) -> std::path::PathBuf {
-        // Safe Mode's `/datapack` edits stay in its session folder instead of being written
-        // back to the world, so the next normal open does not adopt them.
-        self.datapack_root().join("datapacks.json")
-    }
-    /// The world's data-pack folder, or Safe Mode's empty one when one was set.
-    fn datapack_root(&self) -> &std::path::Path {
-        if self.pack_root.as_os_str().is_empty() {
-            &self.world_root
-        } else {
-            &self.pack_root
-        }
+        self.world_root.join("datapacks.json")
     }
     /// Discover and load the data packs of the world (once, or on `/reload`).
     pub(super) fn ensure_datapacks(&mut self) {
@@ -356,36 +378,22 @@ impl Game<'_> {
         }
         let _ = self.reload_datapacks(false, &self.level.enabled_features.clone());
     }
-    /// `WorldOpenFlows.openWorldLoadLevelStem`'s first try, before the server starts: read and
-    /// bind the world's data packs. `packs_root` is the world's data-pack folder, or an empty
-    /// folder for Safe Mode. No lock is taken and nothing is published.
-    pub(in crate::game) fn validate_world_packs(
-        &self,
-        packs_root: &std::path::Path,
-        enabled_features: &[String],
-    ) -> Result<(), String> {
-        let additional = super::pack_finders::data_packs(&self.mods);
-        pack_stack(
-            packs_root,
-            &self.options.resources,
-            &self.pack.data_source,
-            &self.pack.data_changes,
-            self.cmds.vanilla_disabled,
-            enabled_features,
-            &additional,
-        )
-        .validate()
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-    }
     pub(super) fn open_world_datapacks(
         &mut self,
         enabled_features: &[String],
-    ) -> Result<PackStack, ReloadStageError> {
+        safe_mode: bool,
+    ) -> crate::Result<PackStack> {
         // Function admission parses commands immediately, including block arguments.
         // Populate static registries on first open; admission synchronizes pack IDs.
         self.build_registries();
-        self.load_datapacks(enabled_features, PackLoad::OpenWorld)
+        let mode = if safe_mode { PackLoad::SafeMode } else { PackLoad::OpenWorld };
+        self.load_datapacks(enabled_features, mode)
+            .map_err(|failure| match failure {
+                PackLoadFailure::Registry(error) => {
+                    super::world_loading::WorldDataError(error.to_string()).into()
+                }
+                PackLoadFailure::Other(error) => error.into(),
+            })
     }
 
     pub(super) fn reload_datapacks(
@@ -399,6 +407,9 @@ impl Game<'_> {
             PackLoad::LibraryOnly
         };
         self.load_datapacks(enabled_features, mode)
+            .map_err(|failure| match failure {
+                PackLoadFailure::Registry(error) | PackLoadFailure::Other(error) => error,
+            })
     }
 
     /// `ServerFunctionLibrary.reload`: the world's registry and tags must be
@@ -407,7 +418,7 @@ impl Game<'_> {
         &mut self,
         enabled_features: &[String],
         mode: PackLoad,
-    ) -> Result<PackStack, ReloadStageError> {
+    ) -> Result<PackStack, PackLoadFailure> {
         horizon_client::mod_content::check_jars(
             &self.options.resources,
             &horizon_client::logging::game_home().join("jars"),
@@ -431,8 +442,11 @@ impl Game<'_> {
             .as_ref()
             .map_or(&self.pack.data_changes, |root| root.data_changes());
         let additional = super::pack_finders::data_packs(&self.mods);
-        let stack = pack_stack(
-            self.datapack_root(),
+        let mut stack = pack_stack_for(
+            super::pack_finders::WorldPacks {
+                world: &self.world_root,
+                safe_mode: mode == PackLoad::SafeMode,
+            },
             &resources,
             data,
             changes,
@@ -440,6 +454,19 @@ impl Game<'_> {
             enabled_features,
             &additional,
         );
+        if mode == PackLoad::Reload && let Some((_, disabled)) = self.level.data_packs.as_ref().filter(|_| self.safe_mode_worldgen) {
+            // ReloadCommand discovers packs against the current configuration, not the
+            // initial Safe Mode selection or an older sidecar on disk.
+            let mut selected = self.fns.enabled.clone();
+            let mut available: Vec<_> = stack.packs.iter().map(|p| &p.id).collect();
+            available.sort();
+            for id in available {
+                if !disabled.contains(id) && !selected.contains(id) {
+                    selected.push(id.clone());
+                }
+            }
+            stack.enabled = datapack::selected_ids(stack.packs.iter().map(Arc::as_ref), &selected);
+        }
         // `ReloadableServerRegistries.reload`: the candidate's registry references bind and
         // validate before anything is published, so a refusal keeps the live library, tables
         // and timer queue.
@@ -451,7 +478,7 @@ impl Game<'_> {
                     "Failed to load datapacks, can't proceed with server load. You can either fix your datapacks or reset to vanilla with --safeMode"
                 );
             }
-            return Err(error);
+            return Err(PackLoadFailure::Registry(error));
         }
         let prepared = self.begin_condition_reload(&stack, &resources)?;
         let context = self
@@ -481,9 +508,9 @@ impl Game<'_> {
         self.pack.additional_data = additional.into();
         // Explicit reloads and fresh world opens both bind the content tables
         // before admission. A library-only load keeps the caller's world tables.
-        if mode == PackLoad::OpenWorld {
+        if matches!(mode, PackLoad::OpenWorld | PackLoad::SafeMode) {
             self.open_world_tables(&stack, &resources)
-                .map_err(|error| ReloadStageError::DataSource(error.to_string()))?;
+                .map_err(|error| PackLoadFailure::Registry(ReloadStageError::DataSource(error.to_string())))?;
         }
         self.fns.loaded = true;
         self.fns.load_pending = true;
@@ -501,6 +528,9 @@ impl Game<'_> {
         if !self.fns.schedule_loaded {
             self.fns.schedule_loaded = true;
             self.load_schedule();
+        }
+        if mode == PackLoad::Reload && self.safe_mode_worldgen {
+            self.save_datapack_settings();
         }
         Ok(stack)
     }
@@ -612,14 +642,23 @@ impl Game<'_> {
             }
         }
     }
-    fn save_datapack_settings(&self) {
-        let disabled: Vec<&String> = self
+    fn save_datapack_settings(&mut self) {
+        let disabled: Vec<String> = self
             .fns
             .packs
             .iter()
             .filter(|p| !self.fns.enabled.contains(&p.id))
-            .map(|p| &p.id)
+            .map(|p| p.id.clone())
             .collect();
+        if self.safe_mode_worldgen {
+            let enabled = (!self.cmds.vanilla_disabled)
+                .then(|| "vanilla".to_owned())
+                .into_iter()
+                .chain(self.fns.enabled.iter().cloned())
+                .collect();
+            self.level.data_packs = Some((enabled, disabled));
+            return; // The same configuration reaches level.dat and the sidecar on save.
+        }
         let json = serde_json::json!({"enabled": self.fns.enabled, "disabled": disabled});
         let _ = std::fs::write(self.datapack_settings_path(), json.to_string());
     }
@@ -1564,7 +1603,7 @@ impl Game<'_> {
         // (`ServerFunctionManager` keeps its queue over a pack change).
         let additional = super::pack_finders::data_packs(&self.mods);
         let mut stack = pack_stack(
-            self.datapack_root(),
+            &self.world_root,
             &self.options.resources,
             &self.pack.data_source,
             &self.pack.data_changes,

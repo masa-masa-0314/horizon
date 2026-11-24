@@ -161,6 +161,27 @@ pub(super) fn data_repository(
     packs
 }
 
+/// Safe Mode changes the initial selection, not which repository is available.
+#[derive(Clone, Copy)]
+pub(super) struct WorldPacks<'a> {
+    pub world: &'a std::path::Path,
+    pub safe_mode: bool,
+}
+
+impl<'a> WorldPacks<'a> {
+    pub(super) fn normal(world: &'a std::path::Path) -> Self {
+        Self { world, safe_mode: false }
+    }
+
+    pub(super) fn enabled(self, packs: &[DataPack], features: &[String]) -> Vec<String> {
+        if self.safe_mode {
+            horizon_client::datapack::safe_mode_ids(packs, features)
+        } else {
+            horizon_client::datapack::enabled_ids(self.world, packs, features)
+        }
+    }
+}
+
 impl Game<'_> {
     pub(super) fn discover_mod_packs(&mut self, kind: PackType) -> Vec<Pack> {
         if !mod_api::__private::listened(HookId::AddPackFinders) {

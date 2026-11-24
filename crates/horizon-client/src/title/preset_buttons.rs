@@ -446,7 +446,7 @@ impl Title {
                         (w / 2.0).floor() - 155.0,
                         y,
                         150.0,
-                        &lang::get_or("horizon.datapack_failure.safe_mode", "Safe Mode"),
+                        &lang::get_or("datapackFailure.safeMode", "Safe Mode"),
                         true,
                         101,
                     ),

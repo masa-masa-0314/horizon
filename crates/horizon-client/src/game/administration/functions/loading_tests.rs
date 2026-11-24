@@ -3,7 +3,7 @@ use serde_json::json;
 
 #[test]
 #[ignore = "daily"]
-fn validation_rejects_a_world_predicate_without_a_type() {
+fn opening_world_packs_reports_invalid_registry_data() {
     crate::game::native_entity_refs::tests::with_game(|game| {
         let dir = datapack::temp_folder().unwrap();
         let pack = dir.join("datapacks").join("old");
@@ -26,15 +26,14 @@ fn validation_rejects_a_world_predicate_without_a_type() {
         )
         .unwrap();
 
-        let error = game.validate_world_packs(&dir, &[]).unwrap_err();
-        assert!(error.contains("No key type"), "{error}");
-        // Safe Mode reads an empty folder, so the world's broken pack is not considered.
-        assert!(game
-            .validate_world_packs(
-                &crate::game::world_loading::create_safe_pack_root().unwrap(),
-                &[]
-            )
-            .is_ok());
+        game.world_root = dir.clone();
+        let error = game.open_world_datapacks(&[], false).err().unwrap();
+        assert!(error.is::<crate::game::world_loading::WorldDataError>());
+        assert!(error.to_string().contains("No key type"), "{error}");
+        // Safe Mode still discovers the broken pack, but never opens its data.
+        let safe = game.open_world_datapacks(&[], true).unwrap();
+        assert!(safe.packs.iter().any(|pack| pack.id == "file/old"));
+        assert!(!safe.enabled.iter().any(|id| id == "file/old"));
         std::fs::remove_dir_all(dir).unwrap();
     });
 }

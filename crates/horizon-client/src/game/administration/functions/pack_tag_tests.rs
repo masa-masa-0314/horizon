@@ -59,7 +59,7 @@ fn a_packs_own_item_and_block_tags_admit_and_match_its_functions() {
     game.player = Some(
         horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(4.5, 200.0, 4.5)).unwrap(),
     );
-    game.open_world_datapacks(&[]).unwrap();
+    game.open_world_datapacks(&[], false).unwrap();
     game.set_allow_commands(true);
     game.world
         .chunks
