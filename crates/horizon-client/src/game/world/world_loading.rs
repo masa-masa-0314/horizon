@@ -398,6 +398,29 @@ impl WorldRequest {
             &level.enabled_features,
             &pack.additional_data,
         );
+        // Keep this on the existing-world UI path. With no worldgen overlays the normal
+        // bundle is already validated independently, and flat worlds can run without it.
+        if !created && retry_access.is_some() && !overrides.is_empty() {
+            use horizon_world::worldgen::generator::OverworldGenerator;
+            let data = horizon_client::vanillagen::shared_data_from(
+                &options.resources.join("worldgen"),
+                &overrides,
+                pack.assets.registry,
+                &pack.data_changes,
+            )?;
+            let preset = horizon_client::save::WorldGen::preset(&save_root);
+            let saved_dimensions = horizon_client::save::world_gen_settings(&save_root)
+                .and_then(|settings| settings.get("dimensions").cloned())
+                .map(|tag| horizon_client::scoreboard::tag_to_json(&tag));
+            OverworldGenerator::validate_world_stems(
+                &data,
+                level.seed,
+                preset,
+                saved_dimensions.as_ref(),
+                dim.id(),
+            )
+            .map_err(|e| WorldDataError(e.to_string()))?;
+        }
         let (mut streaming, save, locator) = make_streaming(
             res,
             pack,

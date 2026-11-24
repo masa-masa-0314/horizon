@@ -2846,6 +2846,80 @@ impl OverworldGenerator {
         }
         Self::from_stem(data, seed, &stem, with_structures, regions, None)
     }
+    /// `WorldOpenFlows` validates every baked level stem before starting the server,
+    /// not just the level containing the player. Loading a noise stem uses the real
+    /// generator's feature sorter, without opening its region files or starting chunks.
+    pub fn validate_world_stems(
+        data: &Arc<GeneratorData>,
+        seed: i64,
+        preset: &str,
+        saved_dimensions: Option<&Value>,
+        active_dimension: &str,
+    ) -> Result<(), GeneratorError> {
+        let preset: Value = serde_json::from_str(
+            data.world_presets
+                .get(preset)
+                .ok_or_else(|| resource(format!("missing world preset {preset}")))?,
+        )?;
+        let mut stems = BTreeMap::new();
+        if let Some(dimensions) = preset["dimensions"].as_object() {
+            stems.extend(
+                dimensions
+                    .iter()
+                    .map(|(id, stem)| (id.as_str(), stem.clone())),
+            );
+        }
+        if let Some(dimensions) = saved_dimensions.and_then(Value::as_object) {
+            stems.extend(
+                dimensions
+                    .iter()
+                    .map(|(id, stem)| (id.as_str(), stem.clone())),
+            );
+        }
+        for (id, stem) in &data.dimensions {
+            let stem = serde_json::from_str(stem).map_err(|e| resource(format!("{id}: {e}")))?;
+            stems.insert(id.as_str(), stem);
+        }
+        for (id, stem) in stems {
+            let generator = &stem["generator"];
+            let result = match generator["type"].as_str() {
+                // The live generator performs the same check with its biome regions.
+                Some("minecraft:noise") if id != active_dimension => {
+                    Self::from_stem(data.clone(), seed, &stem, false, None, None).map(drop)
+                }
+                Some("minecraft:debug") => data.validate_fixed_decoration("minecraft:plains", None),
+                Some("minecraft:flat") => {
+                    let settings = &generator["settings"];
+                    let biome = settings["biome"]
+                        .as_str()
+                        .filter(|id| data.biome_id(id).is_some())
+                        .unwrap_or("minecraft:plains");
+                    // The saved version of these flags can be NBT bytes rather than JSON booleans.
+                    let flag = |key: &str| {
+                        let value = &settings[key];
+                        value.as_bool().unwrap_or_else(|| value.as_i64() == Some(1))
+                    };
+                    let void = settings["layers"].as_array().is_none_or(|layers| {
+                        layers.iter().all(|layer| {
+                            matches!(layer["block"].as_str(), Some("air" | "minecraft:air"))
+                                || layer["height"].as_i64() == Some(0)
+                        })
+                    });
+                    let flat = super::generator_decoration::FlatDecoration::new(
+                        flag("features"),
+                        flag("lakes"),
+                        void,
+                        biome == "minecraft:the_void",
+                    );
+                    data.validate_fixed_decoration(biome, Some(flat))
+                }
+                // Horizon extensions resolve their own chunk generators.
+                _ => Ok(()),
+            };
+            result.map_err(|e| resource(format!("{id}: {e}")))?;
+        }
+        Ok(())
+    }
     /// The pipeline of level `stem` over its noise settings, with a mod's `terrain` in place of
     /// the noise when it has one.
     fn from_stem(
@@ -5484,6 +5558,30 @@ mod tests {
             registry,
             _dir: guard,
         }
+    }
+
+    #[test]
+    fn world_stem_validation_rejects_an_unvisited_noise_dimension() {
+        let fixture = build_synthetic_reuse_data();
+        let dimensions = serde_json::json!({
+            "test:unvisited": {
+                "type": "minecraft:overworld",
+                "generator": {
+                    "type": "minecraft:noise",
+                    "settings": "test:missing_noise_settings"
+                }
+            }
+        });
+        let error = OverworldGenerator::validate_world_stems(
+            &fixture.data,
+            0,
+            "minecraft:normal",
+            Some(&dimensions),
+            "minecraft:overworld",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("test:unvisited"));
+        assert!(error.to_string().contains("test:missing_noise_settings"));
     }
 
     fn neighborhood_positions(center: ChunkPos) -> [ChunkPos; 9] {

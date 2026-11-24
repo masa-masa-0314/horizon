@@ -478,6 +478,24 @@ impl GeneratorData {
             .map_err(|e| resource(format!("biome source: {e}")))?;
         self.decoration_for(&source_json, &source).map(drop)
     }
+    pub(super) fn validate_fixed_decoration(
+        self: &Arc<Self>,
+        biome: &str,
+        flat: Option<super::super::generator_decoration::FlatDecoration>,
+    ) -> Result<(), GeneratorError> {
+        let json = serde_json::json!({ "type": "minecraft:fixed", "biome": biome }).to_string();
+        let source = self
+            .source_catalog
+            .decode(&json)?
+            .resolve(&self.presets, 0)
+            .map_err(|e| resource(format!("biome source: {e}")))?;
+        if let Some(flat) = flat {
+            super::super::generator_decoration::Decoration::new_with(self, &source, Some(flat))
+                .map(drop)
+        } else {
+            self.decoration_for(&json, &source).map(drop)
+        }
+    }
     pub fn registry(&self) -> &'static BlockRegistry {
         self.registry
     }
