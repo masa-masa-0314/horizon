@@ -1,2 +1,4 @@
 # Loading world data packs needs prepared registry data to reach the broken predicate.
 horizon-client game::functions::loading_tests::opening_world_packs_reports_invalid_registry_data lib daily resources
+# The real single-player retry uses the same prepared resources, but no renderer.
+horizon-client game::world_session::datapack_failure_tests::safe_mode_retries_the_failed_open_and_saves_without_the_bad_pack lib daily resources

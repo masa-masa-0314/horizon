@@ -354,6 +354,102 @@ fn refuses_missing_save(saves: &std::path::Path, folder: &str, existing_only: bo
 }
 
 #[cfg(test)]
+mod datapack_failure_tests {
+    use super::*;
+    use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+    use horizon_client::save::{
+        Level, SessionLock, WorldGen, WorldPreset, write_world_gen_settings,
+    };
+    use horizon_client::title::{Mode, Title};
+    use std::time::{Duration, Instant};
+
+    struct NoLoop;
+
+    impl EventLoopCtl for NoLoop {
+        fn exit(&self) {
+            panic!("the game exited while opening a world");
+        }
+
+        fn set_control_flow(&self, _: ControlFlow) {}
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn safe_mode_retries_the_failed_open_and_saves_without_the_bad_pack() {
+        let name = "game::world_session::datapack_failure_tests::safe_mode_retries_the_failed_open_and_saves_without_the_bad_pack";
+        if run_fresh_cases(name, "HORIZON_DATAPACK_FAILURE_CHILD", &["retry"]) {
+            return;
+        }
+
+        let saves = std::env::current_dir().unwrap().join("saves");
+        let folder = "broken";
+        let world = saves.join(folder);
+        let pack = world.join("datapacks/old");
+        let predicate = pack.join("data/prg/predicate/old.json");
+        let contents = br#"{"condition":"minecraft:any_of","terms":[]}"#;
+        std::fs::create_dir_all(predicate.parent().unwrap()).unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"old predicate","min_format":[121,0],"max_format":[121,0]}}"#,
+        )
+        .unwrap();
+        std::fs::write(&predicate, contents).unwrap();
+        let enabled = vec!["vanilla".into(), "file/old".into()];
+        let mut level = Level {
+            name: "Broken data pack".into(),
+            seed: 1,
+            data_packs: Some((enabled, Vec::new())),
+            ..Level::default()
+        };
+        level.write(&world).unwrap();
+        write_world_gen_settings(
+            &world,
+            level.seed,
+            WorldGen {
+                preset: WorldPreset::Flat,
+                structures: false,
+                bonus_chest: false,
+            },
+        )
+        .unwrap();
+
+        with_client_game(|game| {
+            game.settings.render_distance = 2;
+            game.settings.simulation_distance = 2;
+            game.title = Some(Title::new(saves, &game.options.resources, ""));
+            game.title_action(
+                &NoLoop,
+                Action::Play {
+                    folder: folder.into(),
+                },
+            )
+            .unwrap();
+            assert!(game.integrated.is_none());
+            assert!(SessionLock::is_locked(&world));
+            let title = game.title.as_mut().unwrap();
+            assert!(matches!(title.mode, Mode::DatapackFailure { .. }));
+            // At 480×262 the vanilla Safe Mode button starts at (85, 139).
+            let (action, _) = title.click(100.0, 145.0, (480.0, 262.0));
+            assert!(matches!(&action, Action::PlaySafeMode { folder: f } if f == folder));
+            game.title_action(&NoLoop, action).unwrap();
+
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !game.remote.as_ref().is_some_and(|remote| remote.joined) {
+                game.poll_remote().unwrap();
+                assert!(Instant::now() < deadline, "could not join in Safe Mode");
+                std::thread::yield_now();
+            }
+            game.integrated.take().unwrap().stop().unwrap();
+        });
+
+        let saved = Level::read(&world).unwrap();
+        assert_eq!(saved.data_packs, Some((vec!["vanilla".into()], Vec::new())));
+        assert_eq!(std::fs::read(&predicate).unwrap(), contents);
+        assert!(!SessionLock::is_locked(&world));
+    }
+}
+
+#[cfg(test)]
 mod existing_save_tests {
     use super::refuses_missing_save;
     use std::path::{Path, PathBuf};
