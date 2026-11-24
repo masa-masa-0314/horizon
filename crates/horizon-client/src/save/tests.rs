@@ -2100,7 +2100,7 @@ fn session_lock_is_exclusive() {
 fn session_lock_releases_while_a_descriptor_copy_lives() {
     let dir = std::env::temp_dir().join(format!("horizon-lock-copy-{}", std::process::id()));
     let lock = super::SessionLock::acquire(&dir).expect("first lock");
-    let copy = lock.0.try_clone().unwrap();
+    let copy = lock._file.0.try_clone().unwrap();
     drop(lock);
     assert!(super::SessionLock::acquire(&dir).is_ok());
     drop(copy);
