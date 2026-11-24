@@ -375,6 +375,7 @@ impl WorldRequest {
             world_packs,
             &options.resources,
             res.biomes(),
+            &level.enabled_features,
             &pack.additional_data,
         );
         Dim::set_extra(shapes.extra.iter().map(|level| level.id));
@@ -832,17 +833,17 @@ fn worldgen_overrides_of(
 /// The shapes of the world's levels: their dimension types, the world's
 /// enabled packs' stems, then saved preset/editor stems, over vanilla's. A refused type keeps the
 /// vanilla shape, with a warning.
-pub(super) fn level_shapes(
+fn level_shapes(
     world_packs: WorldPacks<'_>,
     resources: &std::path::Path,
     biomes: &horizon_client::biome::Biomes,
+    enabled_features: &[String],
     additional: &[Arc<horizon_client::datapack::DataPack>],
 ) -> horizon_client::chunk::LevelShapes {
     let packs = super::pack_finders::data_repository(world_packs.world, resources, additional);
-    let enabled_features = horizon_client::save::Level::read(world_packs.world)
-        .map(|l| l.enabled_features)
-        .unwrap_or_default();
-    let enabled = world_packs.enabled(&packs, &enabled_features);
+    // Retry uses the flags from the original level.dat, like WorldOpenFlows. Re-reading
+    // the file here could pick different packs from the biome and generator loaders.
+    let enabled = world_packs.enabled(&packs, enabled_features);
     let enabled: Vec<_> = enabled
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
@@ -1565,6 +1566,82 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn safe_mode_shapes_use_the_same_flags_as_the_world_open() {
+        use horizon_assets::resource_source::ResourceRoot;
+
+        let world = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        let write = |path: &std::path::Path, contents: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        };
+        write(
+            &resources
+                .path()
+                .join("data/minecraft/worldgen/biome/plains.json"),
+            "{}",
+        );
+        let feature = resources
+            .path()
+            .join("data/minecraft/datapacks/test_feature");
+        write(
+            &feature.join("pack.mcmeta"),
+            r#"{"pack":{"description":"Shape fixture","min_format":[121,0],"max_format":[121,0]},"features":{"enabled":["minecraft:minecart_improvements"]}}"#,
+        );
+        write(
+            &feature.join("data/test/dimension/shape.json"),
+            r#"{"type":"test:shape","generator":{"type":"minecraft:debug"}}"#,
+        );
+        write(
+            &feature.join("data/test/dimension_type/shape.json"),
+            r#"{"min_y":0,"height":128}"#,
+        );
+        let biomes = horizon_client::biome::Biomes::load_for_server(&ResourceRoot::directory(
+            resources.path().to_owned(),
+        ))
+        .unwrap();
+        let mut initial = Level {
+            enabled_features: vec![
+                "minecraft:vanilla".into(),
+                "minecraft:minecart_improvements".into(),
+            ]
+            .into(),
+            ..Level::default()
+        };
+        initial.write(world.path()).unwrap();
+        let original = Level::read(world.path()).unwrap();
+        initial.enabled_features = vec!["minecraft:vanilla".into()].into();
+        initial.write(world.path()).unwrap();
+        let changed = Level::read(world.path()).unwrap();
+
+        let packs = WorldPacks {
+            world: world.path(),
+            safe_mode: true,
+        };
+        let shapes = level_shapes(
+            packs,
+            resources.path(),
+            &biomes,
+            &original.enabled_features,
+            &[],
+        );
+        let shape = shapes
+            .extra
+            .iter()
+            .find(|level| level.id == "test:shape")
+            .unwrap();
+        assert_eq!(shape.shape.height, 128);
+        let shapes = level_shapes(
+            packs,
+            resources.path(),
+            &biomes,
+            &changed.enabled_features,
+            &[],
+        );
+        assert!(!shapes.extra.iter().any(|level| level.id == "test:shape"));
     }
 
     #[test]
