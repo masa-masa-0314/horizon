@@ -8139,17 +8139,21 @@ impl Renderer {
                     self.lightmap_uploaded = true;
                     self.lightmap_from_cpu = false;
                     self.lightmap_key = Some(key);
+                    self.lightmap_pixels = Self::vanilla_lightmap_pixels(
+                        sky,
+                        darkness,
+                        gamma,
+                        night_vision,
+                        flicker,
+                        boss_darken,
+                    );
                 }
-                self.lightmap_pixels = Self::vanilla_lightmap_pixels(
-                    sky,
-                    darkness,
-                    gamma,
-                    night_vision,
-                    flicker,
-                    boss_darken,
-                );
                 return;
             }
+        }
+        // Same inputs as the texture the CPU last built: nothing to redo.
+        if self.lightmap_uploaded && self.lightmap_from_cpu && self.lightmap_key == Some(key) {
+            return;
         }
         // lightmap.fsh: per (block, sky) level.
         let mut pixels =
