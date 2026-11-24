@@ -176,8 +176,14 @@ pub fn dimension_dir(world: &Path, dimension: &str) -> PathBuf {
 }
 /// `DirectoryLock`: `session.lock` holds "\u{2603}" (UTF-16BE) under an exclusive
 /// file lock for as long as the world is open, so two instances cannot share it.
-pub struct SessionLock(fs::File);
-impl Drop for SessionLock {
+#[derive(Clone)]
+pub struct SessionLock {
+    _file: std::sync::Arc<LockedSessionFile>,
+}
+
+struct LockedSessionFile(fs::File);
+
+impl Drop for LockedSessionFile {
     /// `DirectoryLock.close`: release the lock, then close the file. Closing
     /// alone keeps the lock while any copy of the descriptor lives on, such as
     /// the one a process spawned on another thread holds until its `exec`.
@@ -199,7 +205,9 @@ impl SessionLock {
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
         file.flush()?;
-        Ok(Self(file))
+        Ok(Self {
+            _file: std::sync::Arc::new(LockedSessionFile(file)),
+        })
     }
     /// `DirectoryLock.isLocked`: another copy holds the world's `session.lock`.
     /// A world without the file is not locked; one whose file may not be opened
@@ -222,6 +230,14 @@ impl SessionLock {
             }
         }
     }
+}
+
+/// A saved world's access and the metadata parsed under that access. A Safe Mode
+/// retry uses the same snapshot rather than releasing and reopening the save.
+#[derive(Clone)]
+pub struct WorldAccess {
+    pub lock: SessionLock,
+    pub level: std::sync::Arc<Level>,
 }
 /// Bring a world last saved by an older game version to the current format, as
 /// 26.3 does when it opens one: the file fixes and level.dat first

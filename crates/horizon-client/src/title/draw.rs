@@ -2,7 +2,7 @@ use super::*;
 
 impl Title {
     /// The focused label on a `GenericMessageScreen`.
-    pub(crate) fn draw_generic_message(atlas: &HudAtlas, batch: &mut HudBatch, text: &str) {
+    pub fn draw_generic_message(atlas: &HudAtlas, batch: &mut HudBatch, text: &str) {
         let tw = atlas.font.width_text(&Text::literal(text));
         let tx = (batch.width.ceil() / 2.0).floor() - (tw.ceil() / 2.0).floor();
         let ty = (batch.height.ceil() / 2.0).floor() - 4.0;

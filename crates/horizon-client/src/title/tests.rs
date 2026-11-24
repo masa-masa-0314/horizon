@@ -2190,10 +2190,12 @@ fn low_disk_space_asks_to_continue_or_go_back() {
 fn datapack_failure_offers_safe_mode_or_back() {
     let mut f = Fixture::new();
     f.world("Broken", "Broken");
-    let world = only_world(&f);
-    f.title.mode = Mode::DatapackFailure {
-        world: world.clone(),
+    let path = f.title.saves.join("Broken");
+    let access = crate::save::WorldAccess {
+        lock: crate::save::SessionLock::acquire(&path).unwrap(),
+        level: std::sync::Arc::new(crate::save::Level::read(&path).unwrap()),
     };
+    f.title.ask_datapack_failure("Broken", Some(access));
     let labels: Vec<String> = f
         .title
         .buttons(480.0, 262.0)
@@ -2207,9 +2209,13 @@ fn datapack_failure_offers_safe_mode_or_back() {
             folder: "Broken".into()
         }
     );
-    f.title.mode = Mode::DatapackFailure { world };
+    let access = f.title.take_datapack_retry("Broken").unwrap();
+    assert_eq!(access.level.name, "Broken");
+    assert!(crate::save::SessionLock::is_locked(&path));
+    f.title.ask_datapack_failure("Broken", Some(access));
     assert_eq!(f.click("Back"), Action::None);
     assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert!(!crate::save::SessionLock::is_locked(&path));
 }
 
 #[test]

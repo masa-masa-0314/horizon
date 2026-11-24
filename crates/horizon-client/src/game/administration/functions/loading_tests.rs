@@ -27,11 +27,12 @@ fn opening_world_packs_reports_invalid_registry_data() {
         .unwrap();
 
         game.world_root = dir.clone();
-        let error = game.open_world_datapacks(&[], false).err().unwrap();
+        let error = game.open_world_datapacks(&[]).err().unwrap();
         assert!(error.is::<crate::game::world_loading::WorldDataError>());
         assert!(error.to_string().contains("No key type"), "{error}");
         // Safe Mode still discovers the broken pack, but never opens its data.
-        let safe = game.open_world_datapacks(&[], true).unwrap();
+        game.safe_mode_worldgen = true;
+        let safe = game.open_world_datapacks(&[]).unwrap();
         assert!(safe.packs.iter().any(|pack| pack.id == "file/old"));
         assert!(!safe.enabled.iter().any(|id| id == "file/old"));
         std::fs::remove_dir_all(dir).unwrap();

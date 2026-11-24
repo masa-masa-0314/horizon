@@ -6442,7 +6442,7 @@ impl Game<'_> {
         self.end.set_locator(locator);
         self.share_spawn_conditions();
         self.score = Default::default();
-        let stack = self.open_world_datapacks(&level.enabled_features, safe_mode)?;
+        let stack = self.open_world_datapacks(&level.enabled_features)?;
         if safe_mode {
             // WorldDataConfiguration uses the selected packs and retains forced features.
             let selected = std::iter::once("vanilla".to_owned())
@@ -8190,7 +8190,8 @@ impl Game<'_> {
                 return Ok(false);
             }
             if starting.preparing_resources() {
-                let message = lang::get_or("selectWorld.resource_load", "Preparing Resources...");
+                let message =
+                    crate::lang::get_or("selectWorld.resource_load", "Preparing Resources...");
                 horizon_client::widgets::begin_screen(|| {
                     horizon_client::widgets::ScreenInfo::new("preparing_resources", message.clone())
                 });

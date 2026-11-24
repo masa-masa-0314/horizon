@@ -49,7 +49,22 @@ impl Game<'_> {
             }
             Action::Play { folder } => self.open_existing_world(&folder)?,
             Action::PlaySafeMode { folder } => {
-                self.open_world_as(&folder, None, None, false, None, true, true)?
+                if let Some(access) = self
+                    .title
+                    .as_mut()
+                    .and_then(|title| title.take_datapack_retry(&folder))
+                {
+                    self.open_integrated_with_packs(
+                        &folder,
+                        None,
+                        None,
+                        false,
+                        None,
+                        super::integrated::OpeningPacks::Retry(access),
+                    )?;
+                } else {
+                    self.open_world_as(&folder, None, None, false, None, true, true)?;
+                }
             }
             Action::Create {
                 folder,
@@ -211,7 +226,12 @@ impl Game<'_> {
                 horizon_core::VANILLA_VERSION
             ),
         );
-        self.open_integrated_with_safe_mode(folder, name, seed, creative, create, safe_mode)
+        let packs = if safe_mode {
+            super::integrated::OpeningPacks::SafeMode
+        } else {
+            super::integrated::OpeningPacks::Normal
+        };
+        self.open_integrated_with_packs(folder, name, seed, creative, create, packs)
     }
 
     /// Load authoritative world state synchronously, without client entry or

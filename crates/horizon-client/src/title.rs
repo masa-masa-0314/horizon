@@ -512,6 +512,8 @@ pub struct Title {
     /// The save a native mod's request is taking through Play's checks (Yes was answered): the alerts and the
     /// backup questions of that open return to the main page, not to the world list.
     request_folder: Option<String>,
+    /// `WorldOpenFlows` keeps access to the same save until retry or Back.
+    datapack_retry: Option<(String, crate::save::WorldAccess)>,
     /// A Realm's checked address, once the Realms screen's join came back.
     connect_request: Option<String>,
     /// EditWorldScreen's and WorldOpenFlows' `SystemToast` and its slide.
@@ -851,6 +853,9 @@ impl Title {
     /// different id waits in `requested` for the game; the same screen again
     /// (its id unchanged) is applied at once.
     pub fn set_mode(&mut self, mut mode: Mode) {
+        if !matches!(mode, Mode::DatapackFailure { .. }) {
+            self.datapack_retry = None;
+        }
         if matches!(mode, Mode::Main) {
             self.request_folder = None;
         }
@@ -948,6 +953,7 @@ impl Title {
             erase_check: Cell::new([0.0; 4]),
             open_request: None,
             request_folder: None,
+            datapack_retry: None,
             connect_request: None,
             toast: None,
             pending_toast: None,
@@ -1419,11 +1425,12 @@ impl Title {
     }
     /// `WorldOpenFlows.openWorldLoadLevelStem`'s `DatapackLoadFailureScreen`: the world's data
     /// packs did not load. Safe Mode retries without them; Back returns to the world list.
-    pub fn ask_datapack_failure(&mut self, folder: &str) {
+    pub fn ask_datapack_failure(&mut self, folder: &str, access: Option<crate::save::WorldAccess>) {
         if let Some(world) = list_worlds(&self.saves)
             .into_iter()
             .find(|world| world.folder == folder)
         {
+            self.datapack_retry = access.map(|access| (folder.to_owned(), access));
             self.set_mode(Mode::DatapackFailure { world });
         } else {
             self.failed(lang::get_or(
@@ -1432,6 +1439,13 @@ impl Title {
             ));
         }
     }
+    /// Transfer the retained world access to the Safe Mode loader.
+    pub fn take_datapack_retry(&mut self, folder: &str) -> Option<crate::save::WorldAccess> {
+        self.datapack_retry
+            .take()
+            .and_then(|(saved, access)| (saved == folder).then_some(access))
+    }
+
     /// Safe Mode failed too: vanilla's `AlertScreen` over the world list
     /// (`datapackFailure.safeMode.failed.title` and `.description`).
     pub fn datapack_safe_mode_failed(&mut self, folder: &str) {
@@ -2692,6 +2706,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             },
             (Mode::DatapackFailure { world }, Some(102)) => {
                 let folder = world.folder.clone();
+                self.datapack_retry = None;
                 self.back_from_world(&folder);
                 Action::None
             }

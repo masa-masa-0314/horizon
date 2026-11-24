@@ -4,6 +4,9 @@ use super::*;
 use horizon_client::vanillagen::TerrainResources;
 use horizon_world::item_defaults::ItemData;
 
+/// Transfers the world access from the loading worker to the retry screen on failure.
+pub(super) type RetryAccess = Arc<std::sync::Mutex<Option<horizon_client::save::WorldAccess>>>;
+
 /// Failure to load the selected packs or to validate a selected generator, rather than
 /// an unrelated I/O or server startup failure. Kept across the worker boundaries.
 #[derive(Debug)]
@@ -52,6 +55,7 @@ pub(super) struct WorldRequest {
     owner: Option<(String, u128)>,
     /// `DatapackLoadFailureScreen`'s Safe Mode: select vanilla and required packs first.
     safe_mode: bool,
+    retry_access: Option<RetryAccess>,
 }
 
 pub(super) struct PreparedWorld {
@@ -106,6 +110,7 @@ impl WorldRequest {
             rule_registry,
             owner: None,
             safe_mode: false,
+            retry_access: None,
         })
     }
 
@@ -120,6 +125,11 @@ impl WorldRequest {
     /// Open without the world's own data packs (`DatapackLoadFailureScreen`'s Safe Mode).
     pub fn with_safe_mode(mut self, safe_mode: bool) -> Self {
         self.safe_mode = safe_mode;
+        self
+    }
+
+    pub fn with_retry_access(mut self, retry_access: Option<RetryAccess>) -> Self {
+        self.retry_access = retry_access;
         self
     }
 
@@ -179,6 +189,7 @@ impl WorldRequest {
             rule_registry,
             owner,
             safe_mode,
+            retry_access,
         } = self;
         let name = name.as_deref();
         horizon_client::biome::Biomes::forget_missing_warnings();
@@ -187,41 +198,57 @@ impl WorldRequest {
             create
         });
         let create = create.as_ref();
+        let retry = retry_access
+            .as_ref()
+            .and_then(|access| access.lock().unwrap().clone());
         // openWorldLoadLevelData: level data that does not read is RecoverWorldDataScreen's to
         // handle (the title screen shows it); a world opened another way must not become a
         // new one with a random seed under the same name.
-        fall_back_to_level_dat_old_without_asking(options.execution_role, &save_root, &folder);
-        if let Some(issue) = horizon_client::save::level_data_needs_recovery(&save_root) {
-            let why = match issue {
-                horizon_client::save::DatIssue::Missing => "level.dat is missing".to_owned(),
-                horizon_client::save::DatIssue::Unreadable(why) => why,
-            };
-            return Err(format!(
-                "Failed to load world \"{folder}\": its level data does not read ({why}). \
+        if retry.is_none() {
+            fall_back_to_level_dat_old_without_asking(options.execution_role, &save_root, &folder);
+            if let Some(issue) = horizon_client::save::level_data_needs_recovery(&save_root) {
+                let why = match issue {
+                    horizon_client::save::DatIssue::Missing => "level.dat is missing".to_owned(),
+                    horizon_client::save::DatIssue::Unreadable(why) => why,
+                };
+                return Err(format!(
+                    "Failed to load world \"{folder}\": its level data does not read ({why}). \
                  Open it from the world list to try restoring level.dat_old."
-            )
-            .into());
-        }
-        // LevelSummary.isCompatible, which the dedicated server's `Main` checks before it fixes
-        // a world: a world from another series is refused, never upgraded in place.
-        if let Some(version) = horizon_client::save::incompatible_version(&save_root) {
-            let version = if version.is_empty() {
-                "unknown".to_owned()
-            } else {
-                version
-            };
-            return Err(format!(
-                "Failed to load world \"{folder}\": it was last played in version {version}, \
+                )
+                .into());
+            }
+            // LevelSummary.isCompatible, which the dedicated server's `Main` checks before it fixes
+            // a world: a world from another series is refused, never upgraded in place.
+            if let Some(version) = horizon_client::save::incompatible_version(&save_root) {
+                let version = if version.is_empty() {
+                    "unknown".to_owned()
+                } else {
+                    version
+                };
+                return Err(format!(
+                    "Failed to load world \"{folder}\": it was last played in version {version}, \
                  which cannot be opened in this version."
-            )
-            .into());
+                )
+                .into());
+            }
+            horizon_client::save::upgrade_older_world_with(&save_root, upgrade)?;
+            horizon_client::save::migrate_legacy(&save_root)?;
         }
-        horizon_client::save::upgrade_older_world_with(&save_root, upgrade)?;
-        horizon_client::save::migrate_legacy(&save_root)?;
-        let session_lock = horizon_client::save::SessionLock::acquire(&save_root)?;
+        let (session_lock, existing) = if let Some(access) = retry {
+            (access.lock, Some((*access.level).clone()))
+        } else {
+            let lock = horizon_client::save::SessionLock::acquire(&save_root)?;
+            let existing = Level::read_with_registry(&save_root, rule_registry.clone());
+            if let (Some(retry_access), Some(level)) = (&retry_access, &existing) {
+                *retry_access.lock().unwrap() = Some(horizon_client::save::WorldAccess {
+                    lock: lock.clone(),
+                    level: Arc::new(level.clone()),
+                });
+            }
+            (lock, existing)
+        };
         // RandomSequences: the world's data/minecraft/random_sequences.dat.
         let rand_sequences = super::trading::read_random_sequences(&save_root);
-        let existing = Level::read_with_registry(&save_root, rule_registry.clone());
         let created = existing.is_none();
         let level = existing.unwrap_or_else(|| Level {
             name: name.unwrap_or(&folder).to_owned(),
@@ -707,7 +734,14 @@ fn live_feature_overrides(
     additional: &[Arc<horizon_client::datapack::DataPack>],
 ) -> horizon_world::worldgen::overrides::WorldgenOverrides {
     let biomes = packed_biomes(world_packs, resources, base, enabled_features, additional);
-    worldgen_overrides_of(world_packs, resources, &biomes, enabled_features, additional).0
+    worldgen_overrides_of(
+        world_packs,
+        resources,
+        &biomes,
+        enabled_features,
+        additional,
+    )
+    .0
 }
 /// The Create screen's chosen packs' worldgen entries over the game's own
 /// (`applyNewPackConfig` reloads the world with the new pack config): the
@@ -1162,11 +1196,19 @@ pub(super) fn make_streaming(
         .is_some_and(|s| s.features || s.lakes);
     // A generator that cannot be built (a layer block the registry lacks, a level shorter
     // than the noise) leaves the world on its flat ground, as it was before.
-    let data_error = |error: &(dyn std::error::Error + 'static), overrides: &horizon_world::worldgen::overrides::WorldgenOverrides| {
-        !overrides.is_empty()
-            && error.downcast_ref::<horizon_world::worldgen::generator::GeneratorError>()
-                .is_some_and(|error| !matches!(error, horizon_world::worldgen::generator::GeneratorError::Io(_)))
-    };
+    let data_error =
+        |error: &(dyn std::error::Error + 'static),
+         overrides: &horizon_world::worldgen::overrides::WorldgenOverrides| {
+            !overrides.is_empty()
+                && error
+                    .downcast_ref::<horizon_world::worldgen::generator::GeneratorError>()
+                    .is_some_and(|error| {
+                        !matches!(
+                            error,
+                            horizon_world::worldgen::generator::GeneratorError::Io(_)
+                        )
+                    })
+        };
     let flat_vanilla = if let Some(settings) = flat_settings {
         let overrides = world_worldgen_overrides(
             world_packs,
@@ -1562,6 +1604,7 @@ mod tests {
                 create: Some(create.clone()),
                 rule_registry: registry.clone(),
                 safe_mode: false,
+                retry_access: None,
             };
             assert!(Arc::ptr_eq(
                 request.create.as_ref().unwrap().rules.registry(),
@@ -1901,7 +1944,8 @@ mod tests {
         let world =
             std::env::temp_dir().join(format!("horizon-mod-terrain-{}", std::process::id()));
         std::fs::create_dir_all(&world).unwrap();
-        let (overrides, _) = worldgen_overrides_of(WorldPacks::normal(&world), &root, &biomes, &[], &[]);
+        let (overrides, _) =
+            worldgen_overrides_of(WorldPacks::normal(&world), &root, &biomes, &[], &[]);
         let shapes = shapes_of(&overrides);
         use horizon_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
         let inputs = LoadInputs::new(Default::default(), root.join("settings"));
@@ -2025,6 +2069,7 @@ mod tests {
                             create: None,
                             rule_registry: Level::default().rule_registry,
                             safe_mode: false,
+                            retry_access: None,
                         };
                         game.load_world(request).unwrap();
                         for (dim, preset, id, biome) in REGIONS {
@@ -2167,6 +2212,7 @@ mod unused_feature_startup_tests {
                 owner: None,
                 rule_registry: Level::default().rule_registry,
                 safe_mode: false,
+                retry_access: None,
             };
             let result = request.prepare(
                 &loaded.resources,
@@ -2283,6 +2329,7 @@ mod unused_feature_preservation_tests {
             owner: None,
             rule_registry: Level::default().rule_registry,
             safe_mode: false,
+            retry_access: None,
         };
         assert!(
             request

@@ -456,6 +456,12 @@ enum Publish {
 /// of the connection and the world's name, or why it failed.
 type Ready = std::result::Result<(Pipe, String), super::world_loading::OpenFailure>;
 
+pub(super) enum OpeningPacks {
+    Normal,
+    SafeMode,
+    Retry(horizon_client::save::WorldAccess),
+}
+
 /// An integrated server loading its world: the window keeps drawing its
 /// loading screen and joins once the server is ready, as vanilla's client
 /// does while its server prepares (`Minecraft.doWorldLoad`), instead of
@@ -469,9 +475,9 @@ pub(super) struct Starting {
     /// `Minecraft.doWorldLoad`'s `newWorld`: the loading screen stays 500 ms
     /// once the level is ready.
     new_world: bool,
-    /// `DatapackLoadFailureScreen`'s Safe Mode: a startup failure goes back to the title
-    /// instead of the fatal-error path.
+    /// `DatapackLoadFailureScreen`'s Safe Mode: a second data failure shows the alert.
     safe_mode: bool,
+    retry_access: Option<super::world_loading::RetryAccess>,
     /// Vanilla presents the resource message once even when the resources load immediately.
     resource_frame_pending: std::cell::Cell<bool>,
 }
@@ -505,6 +511,7 @@ struct Launch {
     owner_profile: Option<Arc<OwnerProfile>>,
     /// DatapackLoadFailureScreen's Safe Mode: the world's data packs are left out.
     safe_mode: bool,
+    retry_access: Option<super::world_loading::RetryAccess>,
 }
 
 impl Game<'_> {
@@ -555,18 +562,18 @@ impl Game<'_> {
         creative: bool,
         create: Option<&WorldOptions>,
     ) -> Result<()> {
-        self.open_integrated_with_safe_mode(folder, name, seed, creative, create, false)
+        self.open_integrated_with_packs(folder, name, seed, creative, create, OpeningPacks::Normal)
     }
     /// `open_integrated`, with `DatapackLoadFailureScreen`'s Safe Mode: the world opens without
     /// its own data packs.
-    pub(super) fn open_integrated_with_safe_mode(
+    pub(super) fn open_integrated_with_packs(
         &mut self,
         folder: &str,
         name: Option<&str>,
         seed: Option<i64>,
         creative: bool,
         create: Option<&WorldOptions>,
-        safe_mode: bool,
+        packs: OpeningPacks,
     ) -> Result<()> {
         self.client_logging_out();
         horizon_client::command::vanilla::set_horizon_commands(
@@ -577,6 +584,14 @@ impl Game<'_> {
             .as_ref()
             .map_or_else(|| self.options.player_name(), |a| a.name.clone());
         let new_world = create.is_some();
+        let safe_mode = !matches!(&packs, OpeningPacks::Normal);
+        let retry_access = match packs {
+            OpeningPacks::Retry(access) => Some(Arc::new(Mutex::new(Some(access)))),
+            OpeningPacks::Normal if !new_world && self.title.is_some() => {
+                Some(Arc::new(Mutex::new(None)))
+            }
+            _ => None,
+        };
         let rule_registry = create.map_or_else(
             || Arc::new(crate::game::api_values::game_rule_registry()),
             |options| options.rules.registry().clone(),
@@ -614,6 +629,7 @@ impl Game<'_> {
                 }))
             }),
             safe_mode,
+            retry_access: retry_access.clone(),
         };
         let mut options = self.options.clone();
         // A server without a console: no local player, no window, no control socket.
@@ -632,11 +648,22 @@ impl Game<'_> {
         // carry the packs' ids past the built-in list, `set_registries`
         // names them through it), as the server thread's copy does.
         let world = std::env::current_dir()?.join("saves").join(folder);
-        let enabled_features = horizon_client::save::Level::read(&world)
-            .map(|l| l.enabled_features)
+        let enabled_features = retry_access
+            .as_ref()
+            .and_then(|retry| {
+                retry
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|access| access.level.enabled_features.clone())
+            })
+            .or_else(|| horizon_client::save::Level::read(&world).map(|l| l.enabled_features))
             .unwrap_or_default();
         self.world_biomes = Some(super::world_loading::packed_biomes(
-            super::pack_finders::WorldPacks { world: &world, safe_mode },
+            super::pack_finders::WorldPacks {
+                world: &world,
+                safe_mode,
+            },
             &self.options.resources,
             self.res.biomes(),
             &enabled_features,
@@ -713,6 +740,7 @@ impl Game<'_> {
             folder: folder.to_owned(),
             new_world,
             safe_mode,
+            retry_access,
             resource_frame_pending: std::cell::Cell::new(
                 !synchronous && !new_world && self.title.is_some() && self.renderer.is_some(),
             ),
@@ -759,11 +787,16 @@ impl Game<'_> {
                     && let Some(title) = self.title.as_mut()
                 {
                     let folder = starting.folder.clone();
+                    let access = starting
+                        .retry_access
+                        .as_ref()
+                        .and_then(|access| access.lock().unwrap().take());
                     log::warn!("Horizon: world \"{folder}\" data packs: {error}");
                     if starting.safe_mode {
+                        drop(access);
                         title.datapack_safe_mode_failed(&folder);
                     } else {
-                        title.ask_datapack_failure(&folder);
+                        title.ask_datapack_failure(&folder, access);
                     }
                     self.integrated_starting = None;
                     self.perf.cancel_world_opening();
@@ -777,6 +810,10 @@ impl Game<'_> {
                 return Err("the integrated server stopped".into());
             }
         };
+        if let Some(access) = &starting.retry_access {
+            // The server now owns the lock. Do not keep the retry's copy after joining.
+            access.lock().unwrap().take();
+        }
         let Some(Starting {
             mut handle,
             player,
@@ -1585,6 +1622,7 @@ fn serve(
     // (an older world's offline owner moves to it at open).
     .map(|request| request.owned_by(&launch.player, launch.owner))
     .map(|request| request.with_safe_mode(launch.safe_mode))
+    .map(|request| request.with_retry_access(launch.retry_access.clone()))
     .and_then(|request| {
         WorldLoader::start(
             request,

@@ -381,12 +381,15 @@ impl Game<'_> {
     pub(super) fn open_world_datapacks(
         &mut self,
         enabled_features: &[String],
-        safe_mode: bool,
     ) -> crate::Result<PackStack> {
         // Function admission parses commands immediately, including block arguments.
         // Populate static registries on first open; admission synchronizes pack IDs.
         self.build_registries();
-        let mode = if safe_mode { PackLoad::SafeMode } else { PackLoad::OpenWorld };
+        let mode = if self.safe_mode_worldgen {
+            PackLoad::SafeMode
+        } else {
+            PackLoad::OpenWorld
+        };
         self.load_datapacks(enabled_features, mode)
             .map_err(|failure| match failure {
                 PackLoadFailure::Registry(error) => {
@@ -454,7 +457,13 @@ impl Game<'_> {
             enabled_features,
             &additional,
         );
-        if mode == PackLoad::Reload && let Some((_, disabled)) = self.level.data_packs.as_ref().filter(|_| self.safe_mode_worldgen) {
+        if mode == PackLoad::Reload
+            && let Some((_, disabled)) = self
+                .level
+                .data_packs
+                .as_ref()
+                .filter(|_| self.safe_mode_worldgen)
+        {
             // ReloadCommand discovers packs against the current configuration, not the
             // initial Safe Mode selection or an older sidecar on disk.
             let mut selected = self.fns.enabled.clone();
@@ -510,7 +519,9 @@ impl Game<'_> {
         // before admission. A library-only load keeps the caller's world tables.
         if matches!(mode, PackLoad::OpenWorld | PackLoad::SafeMode) {
             self.open_world_tables(&stack, &resources)
-                .map_err(|error| PackLoadFailure::Registry(ReloadStageError::DataSource(error.to_string())))?;
+                .map_err(|error| {
+                    PackLoadFailure::Registry(ReloadStageError::DataSource(error.to_string()))
+                })?;
         }
         self.fns.loaded = true;
         self.fns.load_pending = true;
@@ -3927,7 +3938,9 @@ mod required_tag_tests {
             }
             store.function_tags.insert(
                 "minecraft:tick".into(),
-                ids.iter().map(|id| ((*id).to_owned(), true, false)).collect(),
+                ids.iter()
+                    .map(|id| ((*id).to_owned(), true, false))
+                    .collect(),
             );
             store
         };
